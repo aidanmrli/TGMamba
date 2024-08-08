@@ -29,7 +29,7 @@ Source: [ops/selective_scan_interface.py](mamba_ssm/ops/selective_scan_interface
 
 For now, we use the ref functions.
 
-### Mamba Block
+### TGMamba Block
 
 The main module of this repository is the TGMamba architecture block wrapping the selective SSM.
 
@@ -53,7 +53,7 @@ y = model(x)
 assert y.shape == x.shape
 ```
 
-### Mamba-2 (Note: not yet used)
+### Mamba-2 (Note: not yet used, need to update)
 
 The Mamba-2 block is implemented at [modules/mamba2.py](mamba_ssm/modules/mamba2.py).
 
