@@ -3,7 +3,8 @@
 import torch
 import torch.nn.functional as F
 from torch.cuda.amp import custom_bwd, custom_fwd
-
+import torch_geometric
+from torch_geometric.nn import GCNConv
 from einops import rearrange, repeat
 
 try:
@@ -13,14 +14,14 @@ except ImportError:
     causal_conv1d_fn = None
     causal_conv1d_cuda = None
 
-import selective_scan_cuda
+# import selective_scan_cuda
 
 
 class SelectiveScanFn(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, u, delta, A, B, C, D=None, z=None, delta_bias=None, delta_softplus=False,
-                return_last_state=False):
+                U=None, Lambda=None, alphas=None, betas=None, cs=None, return_last_state=False):
         if u.stride(-1) != 1:
             u = u.contiguous()
         if delta.stride(-1) != 1:
@@ -39,35 +40,56 @@ class SelectiveScanFn(torch.autograd.Function):
         if C.dim() == 3:
             C = rearrange(C, "b dstate l -> b 1 dstate l")
             ctx.squeeze_C = True
-        out, x, *rest = selective_scan_cuda.fwd(u, delta, A, B, C, D, z, delta_bias, delta_softplus)
+        
+        # TODO revise the treatment of Lambda, maybe it should be a tensor of shape (batch_size, V, V) or a tensor of shape (batch_size, V) that we raise to be a matrix
+        Lambda_poly_A = sum(alphas[i] * Lambda**i for i in range(len(alphas)))
+        Lambda_poly_B = sum(betas[i] * Lambda**i for i in range(len(betas)))
+        Lambda_poly_C = sum(cs[i] * Lambda**i for i in range(len(cs)))
+        Q_a = torch.einsum('bvw,bw,bxy->bvy', U, Lambda_poly_A, U.transpose(-1, -2))
+        Q_b = torch.einsum('bvw,bw,bxy->bvy', U, Lambda_poly_B, U.transpose(-1, -2))
+        Q_c = torch.einsum('bvw,bw,bxy->bvy', U, Lambda_poly_C, U.transpose(-1, -2))
+
+        out, x, *rest = selective_scan_cuda.fwd(u, delta, A, B, C, D, z, delta_bias, delta_softplus, Q_a, Q_b, Q_c)
         ctx.delta_softplus = delta_softplus
         ctx.has_z = z is not None
         last_state = x[:, :, -1, 1::2]  # (batch, dim, dstate)
         if not ctx.has_z:
-            ctx.save_for_backward(u, delta, A, B, C, D, delta_bias, x)
+            ctx.save_for_backward(u, delta, A, B, C, D, delta_bias, x, U, Lambda, alphas, betas, cs)
             return out if not return_last_state else (out, last_state)
         else:
-            ctx.save_for_backward(u, delta, A, B, C, D, z, delta_bias, x, out)
+            ctx.save_for_backward(u, delta, A, B, C, D, z, delta_bias, x, out, U, Lambda, alphas, betas, cs)
             out_z = rest[0]
             return out_z if not return_last_state else (out_z, last_state)
 
     @staticmethod
     def backward(ctx, dout, *args):
+        """
+        
+        """
         if not ctx.has_z:
-            u, delta, A, B, C, D, delta_bias, x = ctx.saved_tensors
+            u, delta, A, B, C, D, delta_bias, x, U, Lambda, alphas, betas, cs = ctx.saved_tensors
             z = None
             out = None
         else:
-            u, delta, A, B, C, D, z, delta_bias, x, out = ctx.saved_tensors
+            u, delta, A, B, C, D, z, delta_bias, x, out, U, Lambda, alphas, betas, cs = ctx.saved_tensors
         if dout.stride(-1) != 1:
             dout = dout.contiguous()
+        
+        Lambda_poly_A = sum(alphas[i] * Lambda**i for i in range(len(alphas)))
+        Lambda_poly_B = sum(betas[i] * Lambda**i for i in range(len(betas)))
+        Lambda_poly_C = sum(cs[i] * Lambda**i for i in range(len(cs)))
+
+        Q_a = torch.einsum('bvw,bw,bxy->bvy', U, Lambda_poly_A, U.transpose(-1, -2))
+        Q_b = torch.einsum('bvw,bw,bxy->bvy', U, Lambda_poly_B, U.transpose(-1, -2))
+        Q_c = torch.einsum('bvw,bw,bxy->bvy', U, Lambda_poly_C, U.transpose(-1, -2))
+
         # The kernel supports passing in a pre-allocated dz (e.g., in case we want to fuse the
         # backward of selective_scan_cuda with the backward of chunk).
         # Here we just pass in None and dz will be allocated in the C++ code.
         du, ddelta, dA, dB, dC, dD, ddelta_bias, *rest = selective_scan_cuda.bwd(
             u, delta, A, B, C, D, z, delta_bias, dout, x, out, None, ctx.delta_softplus,
-            False  # option to recompute out_z, not used here
-        )
+            False, Q_a, Q_b, Q_c  # option to recompute out_z, not used here
+        )   # should it be Q_a, Q_b, Q_c being passed to the bwd? or just the polynomial coefficients?
         dz = rest[0] if ctx.has_z else None
         dB = dB.squeeze(1) if getattr(ctx, "squeeze_B", False) else dB
         dC = dC.squeeze(1) if getattr(ctx, "squeeze_C", False) else dC
@@ -75,44 +97,68 @@ class SelectiveScanFn(torch.autograd.Function):
                 dD if D is not None else None,
                 dz,
                 ddelta_bias if delta_bias is not None else None,
-                None,
-                None)
+                None, None,
+                dalphas, dbetas, dcs)
 
 
 def selective_scan_fn(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta_softplus=False,
-                     return_last_state=False):
+                      U=None, Lambda=None, alphas=None, betas=None, cs=None, return_last_state=False):
     """if return_last_state is True, returns (out, last_state)
     last_state has shape (batch, dim, dstate). Note that the gradient of the last state is
     not considered in the backward pass.
     """
-    return SelectiveScanFn.apply(u, delta, A, B, C, D, z, delta_bias, delta_softplus, return_last_state)
+    return SelectiveScanFn.apply(u, delta, A, B, C, D, z, delta_bias, delta_softplus, 
+                                 U, Lambda, alphas, betas, cs, return_last_state)
 
 
 def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta_softplus=False,
-                      return_last_state=False):
+                       gconv_A=None, gconv_B=None, gconv_C=None,
+                       edge_index=None, edge_weight=None, num_vertices=19, act=None, return_last_state=False):
     """
-    u: r(B D L)
-    delta: r(B D L)
-    A: c(D N) or r(D N)
-    B: c(D N) or r(B N L) or r(B N 2L) or r(B G N L) or (B G N L)
-    C: c(D N) or r(B N L) or r(B N 2L) or r(B G N L) or (B G N L)
-    D: r(D)
-    z: r(B D L)
-    delta_bias: r(D), fp32
+    Implements the selective scan operation for the Mamba SSM.
+    
+    Args:
+    u: Input tensor of shape r(B*V, D, L)
+    delta: Delta values of shape r(B*V, D, L)
+    A: State transition matrix of shape r(D, N) or c(D,N) (real or complex)
+    B: Input projection matrix, shape c(D N) or r(B*V, N, L) or r(B*V, N, 2L) or r(B*V, G N L) or (B*V, G N L)
+    C: Output projection matrix, shape c(D N) or r(B*V, N, L) or r(B*V, N, 2L) or r(B*V, G N L) or (B*V, G N L)
+    D: Skip connection parameter of shape r(D)
+    z: Gating tensor of shape r(B*V, D, L)
+    delta_bias: Bias for delta values of shape r(D), fp32
+    delta_softplus: Boolean, whether to apply softplus to delta
+    return_last_state: Boolean, whether to return the last state
 
-    out: r(B D L)
-    last_state (optional): r(B D dstate) or c(B D dstate)
+    Returns:
+    out: Output tensor of shape r(B, D, L)
+    last_state (optional): Last state tensor of shape r(B D dstate) or c(B D dstate)
     """
     dtype_in = u.dtype
     u = u.float()
+
+    # Reshape u from (B*V, D, L) to (B, V, D, L)
+    # print("selective_scan_ref u.shape: ", u.shape)
+    batch, channels, seqlen = u.shape
+
+    batch = batch // num_vertices
+
+    u = u.view(-1, num_vertices, channels, seqlen)  # (B, V, D, L)
+
     delta = delta.float()
     if delta_bias is not None:
         delta = delta + delta_bias[..., None].float()
     if delta_softplus:
         delta = F.softplus(delta)
-    batch, dim, dstate = u.shape[0], A.shape[0], A.shape[1]
+    delta = delta.view(-1, num_vertices, channels, seqlen)  # (B, V, D, L)
+    if z is not None:
+        z = z.view(-1, num_vertices, channels, seqlen)
+    dim, dstate = A.shape[0], A.shape[1]    # (D, N)
+
+    # Check if B and C are input-dependent (variable) or fixed
     is_variable_B = B.dim() >= 3
     is_variable_C = C.dim() >= 3
+
+    # Handle complex numbers for A, B, and C
     if A.is_complex():
         if is_variable_B:
             B = torch.view_as_complex(rearrange(B.float(), "... (L two) -> ... L two", two=2))
@@ -121,42 +167,122 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta
     else:
         B = B.float()
         C = C.float()
-    x = A.new_zeros((batch, dim, dstate))
+
+    # Initialize state tensor x and output tensor y
+    x = A.new_zeros((batch, num_vertices, dim, dstate))     # (B, V, D, N)
     ys = []
-    deltaA = torch.exp(torch.einsum('bdl,dn->bdln', delta, A))
+
+    # Precompute some values for efficiency
+    deltaA = torch.exp(torch.einsum('bvdl,dn->bvdln', delta, A))    # (B, V, D, L, N)
+    # Compute deltaB * u, handling different shapes of B
+    # APPLY convolution to u before multiplying with deltaB
+    if gconv_B is not None:
+            # perform the graph convolution on the input u
+            u_conv = []
+            for t in range(seqlen):
+                # Extract the t-th timestep
+                u_t = u[:, :, :, t]  # Shape: (B, V, D)
+                # edge_index = edge_index.view(edge_weight.shape[0], 2, edge_weight.shape[1])
+                # edge_weight = edge_weight.view(edge_weight.shape[0], 1, edge_weight.shape[1])
+
+                # Flatten for batched graph convolution
+                u_t = u_t.view(-1, u_t.size(2)) # (B*V, D)
+                
+                # u_t shape: (B*V, D)
+                # edge_index shape: (2, B*num_edges) 
+                # edge_weight shape: [B*num_edges]
+
+                # apply the batched graph convolution
+                u_t_conv = gconv_B(u_t, edge_index, edge_weight)   # (B*V, D)
+                u_t_conv = u_t_conv.view(batch, num_vertices, u_t.size(1))   # (B, V, D)
+                u_conv.append(u_t_conv)
+            
+            # Stack the convolved timesteps back together
+            u = torch.stack(u_conv, dim=-1)  # Shape: (B, V, D, L)
+    # B = 32, V = 19, D = 64, N = 16, L = 10
+    # B has shape (B*V, N, L) if variable
+    # print("delta.shape: ", delta.shape, "B.shape: ", B.shape, "u.shape: ", u.shape)
     if not is_variable_B:
-        deltaB_u = torch.einsum('bdl,dn,bdl->bdln', delta, B, u)
+        deltaB_u = torch.einsum('bvdl,dn,bvdl->bvdln', delta, B, u) # (B, V, D, L, N)
     else:
         if B.dim() == 3:
-            deltaB_u = torch.einsum('bdl,bnl,bdl->bdln', delta, B, u)
+            B = B.view(batch, num_vertices, B.shape[1], B.shape[2])    # (B, V, N, L)
+            deltaB_u = torch.einsum('bvdl,bvnl,bvdl->bvdln', delta, B, u)    # (B, V, D, L, N)
         else:
-            B = repeat(B, "B G N L -> B (G H) N L", H=dim // B.shape[1])
-            deltaB_u = torch.einsum('bdl,bdnl,bdl->bdln', delta, B, u)
+            B = B.view(-1, num_vertices, *B.shape[1:])
+            B = repeat(B, "B V G N L -> B V (G H) N L", H=dim // B.shape[2])
+            deltaB_u = torch.einsum('bvdl,bvdnl,bvdl->bvdln', delta, B, u)  # (B, V, D, L, N)
     if is_variable_C and C.dim() == 4:
-        C = repeat(C, "B G N L -> B (G H) N L", H=dim // C.shape[1])
+        C = repeat(C, "B G N L -> B (G H) N L", H=dim // C.shape[1])  # (B*V, D, L, N)
     last_state = None
-    for i in range(u.shape[2]):
-        x = deltaA[:, :, i] * x + deltaB_u[:, :, i]
+    C = C.view(-1, num_vertices, *C.shape[1:])  # (B, V, D, L, N)
+    # Main selective scan loop
+    for i in range(seqlen):
+        # perform convolution on x before applying w_A
+        # x (B, V, D, N), (2, B*num_edges), (B*num_edges)
+        # B = 32, V = 19, D = 64, N = 16, L = 10
+        x = x.view(batch * num_vertices, channels, dstate)   # (B*V, D, N)
+        conv_A = torch.zeros_like(x)
+        for j in range(dstate): # in range N
+            conv_A[:, :, j] = gconv_A(x[:, :, j], edge_index, edge_weight) if gconv_A is not None else x
+
+        conv_A = conv_A.view(batch, num_vertices, channels, dstate)   # Shape: (B, V, D, N)
+
+        # A_t h_t-1 + B_t u_t
+        # want (B, V, D, N) + (B, V, D, N)
+        # conv_A shape: [32, 19, 64, 16] 
+        # deltaA shape:  [32, 19, 64, 10, 16] 
+        # deltaB_u shape: [32, 19, 64, 10, 16]
+        x = conv_A * deltaA[:, :, :, i] + deltaB_u[:, :, :, i]  
         if not is_variable_C:
-            y = torch.einsum('bdn,dn->bd', x, C)
+            y = torch.einsum('bvdn,dn->bvd', x, C)
         else:
-            if C.dim() == 3:
-                y = torch.einsum('bdn,bn->bd', x, C[:, :, i])
-            else:
-                y = torch.einsum('bdn,bdn->bd', x, C[:, :, :, i])
-        if i == u.shape[2] - 1:
+            x = x.view(batch * num_vertices, channels, dstate)   # (B*V, D, N)
+            conv_C = torch.zeros_like(x)
+            for j in range(dstate): # in range N
+                conv_C[:, :, j] = gconv_C(x[:, :, j], edge_index, edge_weight) if gconv_C is not None else x
+
+            conv_C = conv_C.view(batch, num_vertices, channels, dstate)   # Shape: (B, V, D, N)
+
+            # C has shape (B, V, N, L) if variable
+            # [32, 19, 16, 10]
+            # want y to have shape (B, V, D)
+
+            if C.dim() == 4:
+                # y = torch.einsum('bdn,bn->bd', conv_C, C[:, :, :, i])   # want y= (B, V, D)
+                y = torch.einsum('bvdn,bvn->bvd', conv_C, C[:, :, :, i])   # want y= (B, V, D)
+            else:   # C dim is 5
+                y = torch.einsum('bdn,bdn->bd', conv_C, C[:, :, :, :, i])
+        if i == seqlen - 1:
             last_state = x
         if y.is_complex():
             y = y.real * 2
         ys.append(y)
-    y = torch.stack(ys, dim=2) # (batch dim L)
-    out = y if D is None else y + u * rearrange(D, "d -> d 1")
+    
+
+    # stack y's into a single sequence tensor
+    y = torch.stack(ys, dim=3) # (batch dim L)
+
+    # Apply skip connection if D is provided
+    # print("y.shape: ", y.shape, "D.shape: ", D.shape)
+    # print("u.shape: ", u.shape)
+    out = y if D is None else y + u * rearrange(D, "d -> 1 1 d 1")
+
+    # Apply gating if z is provided
     if z is not None:
-        out = out * F.silu(z)
+        out = out * act(z)  # act should be F.silu()
+    
+    # Reshape output back to (B*V, D, L)
+    out = out.reshape(batch * num_vertices, dim, seqlen)
     out = out.to(dtype=dtype_in)
-    return out if not return_last_state else (out, last_state)
+    if return_last_state:
+        last_state = last_state.reshape(-1, dim, dstate)
+        return out, last_state
+    else:    
+        return out
+    
 
-
+# y = SSM(A_, B_, C)(x)
 class MambaInnerFn(torch.autograd.Function):
 
     @staticmethod
@@ -164,13 +290,15 @@ class MambaInnerFn(torch.autograd.Function):
     def forward(ctx, xz, conv1d_weight, conv1d_bias, x_proj_weight, delta_proj_weight,
                 out_proj_weight, out_proj_bias,
                 A, B=None, C=None, D=None, delta_bias=None, B_proj_bias=None,
-                C_proj_bias=None, delta_softplus=True, checkpoint_lvl=1):
+                C_proj_bias=None, delta_softplus=True, 
+                gconv_A=None, gconv_B=None, gconv_C=None,
+                checkpoint_lvl=1):
         """
-             xz: (batch, dim, seqlen)
+             xz: (batch * v, 2 * d_inner, seqlen)
         """
         assert causal_conv1d_cuda is not None, "causal_conv1d_cuda is not available. Please install causal-conv1d."
         assert checkpoint_lvl in [0, 1]
-        L = xz.shape[-1]
+        seqlen = xz.shape[-1]
         delta_rank = delta_proj_weight.shape[1]
         d_state = A.shape[-1] * (1 if not A.is_complex() else 2)
         if torch.is_autocast_enabled():
@@ -182,11 +310,16 @@ class MambaInnerFn(torch.autograd.Function):
         if xz.stride(-1) != 1:
             xz = xz.contiguous()
         conv1d_weight = rearrange(conv1d_weight, "d 1 w -> d w")
+
+        # split input xz into main input x and gated input z. 
+        # Both of these have already been through the linear projection in the main Mamba block.
         x, z = xz.chunk(2, dim=1)
         conv1d_bias = conv1d_bias.contiguous() if conv1d_bias is not None else None
         conv1d_out = causal_conv1d_cuda.causal_conv1d_fwd(
             x, conv1d_weight, conv1d_bias, None, None, None, True
-        )
+        ) # (batch * v, d_inner, seqlen)
+
+        # Produce B, C, D, Delta based on linear projection of x (Page 5 Mamba paper)
         # We're being very careful here about the layout, to avoid extra transposes.
         # We want delta to have d as the slowest moving dimension
         # and L as the fastest moving dimension, since those are what the ssm_scan kernel expects.
@@ -202,9 +335,9 @@ class MambaInnerFn(torch.autograd.Function):
                 B = B + B_proj_bias.to(dtype=B.dtype)
             if not A.is_complex():
                 # B = rearrange(B, "(b l) dstate -> b dstate l", l=L).contiguous()
-                B = rearrange(B, "(b l) dstate -> b 1 dstate l", l=L).contiguous()
+                B = rearrange(B, "(b l) dstate -> b 1 dstate l", l=seqlen).contiguous()
             else:
-                B = rearrange(B, "(b l) (dstate two) -> b 1 dstate (l two)", l=L, two=2).contiguous()
+                B = rearrange(B, "(b l) (dstate two) -> b 1 dstate (l two)", l=seqlen, two=2).contiguous()
         else:
             if B.stride(-1) != 1:
                 B = B.contiguous()
@@ -214,17 +347,43 @@ class MambaInnerFn(torch.autograd.Function):
                 C = C + C_proj_bias.to(dtype=C.dtype)
             if not A.is_complex():
                 # C = rearrange(C, "(b l) dstate -> b dstate l", l=L).contiguous()
-                C = rearrange(C, "(b l) dstate -> b 1 dstate l", l=L).contiguous()
+                C = rearrange(C, "(b l) dstate -> b 1 dstate l", l=seqlen).contiguous()
             else:
-                C = rearrange(C, "(b l) (dstate two) -> b 1 dstate (l two)", l=L, two=2).contiguous()
+                C = rearrange(C, "(b l) (dstate two) -> b 1 dstate (l two)", l=seqlen, two=2).contiguous()
         else:
             if C.stride(-1) != 1:
                 C = C.contiguous()
         if D is not None:
             D = D.contiguous()
-        out, scan_intermediates, out_z = selective_scan_cuda.fwd(
-            conv1d_out, delta, A, B, C, D, z, delta_bias, delta_softplus
-        )
+        
+        # Apply graph convolutions on the input x
+        batch_size, num_vertices, _, _ = conv1d_out.shape
+        edge_index = torch_geometric.utils.get_mesh_edge_index(num_vertices, batch_size)
+        
+        # # GCN for A
+        # h_A = conv1d_out.view(batch_size * num_vertices, -1, seqlen)
+        # h_A = gconv_A(h_A, edge_index)
+        # h_A = h_A.view(batch_size, num_vertices, -1, seqlen)
+        # A_conv = torch.einsum('bvdn,nn->bvdn', h_A, w_A)
+        
+        # # GCN for B
+        # h_B = conv1d_out.view(batch_size * num_vertices, -1, seqlen)
+        # h_B = gconv_B(h_B, edge_index)
+        # h_B = h_B.view(batch_size, num_vertices, -1, seqlen)
+        # B_conv = torch.einsum('bvdn,n->bvdn', h_B, w_B)
+        
+        # # GCN for C
+        # h_C = conv1d_out.view(batch_size * num_vertices, -1, seqlen)
+        # h_C = gconv_C(h_C, edge_index)
+        # h_C = h_C.view(batch_size, num_vertices, -1, seqlen)
+        # C_conv = torch.einsum('bvdn,n->bvdn', h_C, w_C)
+        
+        # # TODO: I don't think this will work.
+        #  Use A_conv, B_conv, and C_conv in place of A, B, and C in the selective scan
+        # out, scan_intermediates, out_z = selective_scan_cuda.fwd(
+        #     conv1d_out, delta, A_conv, B_conv, C_conv, D, z, delta_bias, delta_softplus
+        # )
+        
         ctx.delta_softplus = delta_softplus
         ctx.out_proj_bias_is_None = out_proj_bias is None
         ctx.checkpoint_lvl = checkpoint_lvl
@@ -307,51 +466,98 @@ class MambaInnerFn(torch.autograd.Function):
                 ddelta_bias if delta_bias is not None else None,
                 dB_proj_bias, dC_proj_bias, None)
 
-
+# y = SSM(A_, B_, C)(x)
 def mamba_inner_fn(
     xz, conv1d_weight, conv1d_bias, x_proj_weight, delta_proj_weight,
     out_proj_weight, out_proj_bias,
     A, B=None, C=None, D=None, delta_bias=None, B_proj_bias=None,
-    C_proj_bias=None, delta_softplus=True
+    C_proj_bias=None, delta_softplus=True,
+    gconv_A=None, gconv_B=None, gconv_C=None, w_A=None, w_B=None, w_C=None,
 ):
     return MambaInnerFn.apply(xz, conv1d_weight, conv1d_bias, x_proj_weight, delta_proj_weight,
                               out_proj_weight, out_proj_bias,
-                              A, B, C, D, delta_bias, B_proj_bias, C_proj_bias, delta_softplus)
+                              A, B, C, D, delta_bias, B_proj_bias, C_proj_bias, delta_softplus,
+                              gconv_A, gconv_B, gconv_C, w_A, w_B, w_C)
 
 
 def mamba_inner_ref(
     xz, conv1d_weight, conv1d_bias, x_proj_weight, delta_proj_weight,
     out_proj_weight, out_proj_bias,
     A, B=None, C=None, D=None, delta_bias=None, B_proj_bias=None,
-    C_proj_bias=None, delta_softplus=True
+    C_proj_bias=None, delta_softplus=True,
+    gconv_A=None, gconv_B=None, gconv_C=None,
+    edge_index=None, edge_weight=None, num_vertices=19
 ):
+    """
+        xz,     # (B * V, 2 * d_inner, L) 
+        self.conv1d.weight,     # (d_inner, 1, d_conv)
+        self.conv1d.bias,    # (d_inner)
+        self.x_proj.weight,  # (dt_rank + d_state * 2, d_inner)
+        self.dt_proj.weight,  # (d_inner, dt_rank)
+        self.out_proj.weight,  # (d_inner, d_model)
+        self.out_proj.bias,  # (d_model)
+        A,  # (D, N) or (d_inner, d_state) representing D different structured N x N matrices for each of the D channels
+        None,  # input-dependent B
+        None,  # input-dependent C
+        self.D.float(),  # (d_inner) ie (D)
+        delta_bias=self.dt_proj.bias.float(),   # (d_inner)
+        delta_softplus=True,
+
+        pass to the selective_scan_ref function:
+        u: Input tensor of shape r(B*V, D, L)
+        delta: Delta values of shape r(B*V, D, L)
+        A: State transition matrix of shape r(D, N) or c(D,N) (real or complex)
+        B: Input projection matrix, shape c(D N) or r(B*V, N, L) or r(B*V, N, 2L) or r(B*V, G N L) or (B*V, G N L)
+        C: Output projection matrix, shape c(D N) or r(B*V, N, L) or r(B*V, N, 2L) or r(B*V, G N L) or (B*V, G N L)
+        D: Skip connection parameter of shape r(D)
+        z: Gating tensor of shape r(B*V, D, L)
+        delta_bias: Bias for delta values of shape r(D), fp32
+        delta_softplus: Boolean, whether to apply softplus to delta
+        return_last_state: Boolean, whether to return the last state
+
+        Returns:
+        out: Output tensor of shape r(B, D, L)
+        last_state (optional): Last state tensor of shape r(B D dstate) or c(B D dstate) 
+    """
     assert causal_conv1d_fn is not None, "causal_conv1d_fn is not available. Please install causal-conv1d."
-    L = xz.shape[-1]
+    batch, dim, seqlen = xz.shape  
+    batch = batch // num_vertices
     delta_rank = delta_proj_weight.shape[1]
     d_state = A.shape[-1] * (1 if not A.is_complex() else 2)
-    x, z = xz.chunk(2, dim=1)
-    x = causal_conv1d_fn(x, rearrange(conv1d_weight, "d 1 w -> d w"), conv1d_bias, activation="silu")
+
+    # split input xz into main input x and gated input z
+    x, z = xz.chunk(2, dim=1)   # (B * V, d_inner, L) for each of x and z
+
+    # Apply causal_conv1d to each vertex separately
+    # TODO: or replace this with a convolution over the current graph
+    x = causal_conv1d_fn(x, rearrange(conv1d_weight, "d 1 w -> d w"), conv1d_bias, activation="silu")   # (B * V, d_inner, L)
+
     # We're being very careful here about the layout, to avoid extra transposes.
     # We want delta to have d as the slowest moving dimension
     # and L as the fastest moving dimension, since those are what the ssm_scan kernel expects.
-    x_dbl = F.linear(rearrange(x, 'b d l -> (b l) d'), x_proj_weight)  # (bl d)
+
+    x_dbl = F.linear(rearrange(x, 'b d l -> (b l) d'), x_proj_weight)  # (bvl d)
     delta = delta_proj_weight @ x_dbl[:, :delta_rank].t()
-    delta = rearrange(delta, "d (b l) -> b d l", l=L)
+    delta = rearrange(delta, "d (b l) -> b d l", l=seqlen)  # (B * V, D, L)
+
     if B is None:  # variable B
-        B = x_dbl[:, delta_rank:delta_rank + d_state]  # (bl d)
+        B = x_dbl[:, delta_rank:delta_rank + d_state]  # (bvl d)
         if B_proj_bias is not None:
             B = B + B_proj_bias.to(dtype=B.dtype)
         if not A.is_complex():
-            B = rearrange(B, "(b l) dstate -> b dstate l", l=L).contiguous()
+            B = rearrange(B, "(b l) dstate -> b dstate l", l=seqlen).contiguous()
         else:
-            B = rearrange(B, "(b l) (dstate two) -> b dstate (l two)", l=L, two=2).contiguous()
-    if C is None:  # variable B
-        C = x_dbl[:, -d_state:]  # (bl d)
+            B = rearrange(B, "(b l) (dstate two) -> b dstate (l two)", l=seqlen, two=2).contiguous()
+    if C is None:  # variable C
+        C = x_dbl[:, -d_state:]  # (bvl d)
         if C_proj_bias is not None:
             C = C + C_proj_bias.to(dtype=C.dtype)
         if not A.is_complex():
-            C = rearrange(C, "(b l) dstate -> b dstate l", l=L).contiguous()
+            C = rearrange(C, "(b l) dstate -> b dstate l", l=seqlen).contiguous()
         else:
-            C = rearrange(C, "(b l) (dstate two) -> b dstate (l two)", l=L, two=2).contiguous()
-    y = selective_scan_fn(x, delta, A, B, C, D, z=z, delta_bias=delta_bias, delta_softplus=True)
+            C = rearrange(C, "(b l) (dstate two) -> b dstate (l two)", l=seqlen, two=2).contiguous()
+    
+    y = selective_scan_fn(x, delta, A, B, C, D, z=z, delta_bias=delta_bias, delta_softplus=True,
+                          gconv_A=gconv_A, gconv_B=gconv_B, gconv_C=gconv_C,
+                          edge_index=edge_index, edge_weight=edge_weight, num_vertices=num_vertices)
     return F.linear(rearrange(y, "b d l -> b l d"), out_proj_weight, out_proj_bias)

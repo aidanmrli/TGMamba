@@ -1,0 +1,21 @@
+{
+    "accumulate_grad_batches": 1,
+    "balanced_sampling": true,
+    "gpu_id": [
+        5
+    ],
+    "l2_wd": 1e-05,
+    "lr_init": 0.001,
+    "max_seq_len": 1000,
+    "num_epochs": 100,
+    "num_vertices": 19,
+    "num_workers": 4,
+    "optimizer": "adam",
+    "patience": 3,
+    "rand_seed": 42,
+    "save_dir": "TGMamba/results",
+    "scheduler": "cosine",
+    "test_batch_size": 256,
+    "train_batch_size": 1024,
+    "val_batch_size": 256
+}
