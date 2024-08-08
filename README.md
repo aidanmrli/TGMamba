@@ -19,11 +19,15 @@ Requirements:
 - CUDA 11.6+
 - PyTorch Geometric (we use 2.5.2)
 
+## Usage (key modifications)
+
 ### Selective SSM
 
 Mamba is based on a selective SSM layer, which is the focus of the paper (Section 3; Algorithm 2).
 
 Source: [ops/selective_scan_interface.py](mamba_ssm/ops/selective_scan_interface.py).
+
+For now, we use the ref functions.
 
 ### Mamba Block
 
