@@ -269,7 +269,11 @@ class TGMamba(nn.Module):
 
     def step(self, hidden_states, conv_state, ssm_state):
         """
-        TODO: replace the manual convolution with the GCNConv
+        TODO: need to revamp this function, are we just predicting
+        the next time step in the batch? should hidden_states be
+        called input or something instead? why did they call it hidden_states
+        in the first place if ssm_state is actually the hidden state?
+
         hidden_states: (B*V, L, D)
             B: batch size * num_vertices
             V: number of vertices
