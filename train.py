@@ -5,95 +5,13 @@ import torch
 import os
 import json
 import torch.nn.functional as F
-from torchmetrics import AUROC
+from sklearn import metrics
 
 import torch.optim as optim
 from torch_geometric.data import Dataset
 from torch_geometric.loader import DataLoader
 from model import LightGTMamba
 import wandb
-
-# class LightGTMamba(L.LightningModule):
-#     def __init__(self, args, fire_rate, conv_type):
-#         super().__init__()
-#         self.args = args
-#         self.fire_rate = fire_rate  # probability determining how often neurons are updated.
-#         self.conv_type = conv_type  # gconv or chebconv
-
-#         self.in_proj = torch.nn.Linear(100, 32)     # from arshia's code
-#         self.block = TGMamba(
-#             d_model=32,
-#             d_state=16,
-#             d_conv=4,
-#             expand=2,
-#             num_vertices=19
-#         ).to("cuda")
-#         self.fc = torch.nn.Linear(32, 1)
-#         torch.set_float32_matmul_precision('high') 
-
-#     def forward(self, data):
-#         # Normalize input data
-#         clip = (data.x.float() - data.x.float().mean(2, keepdim=True)) / (data.x.float().std(2, keepdim=True) + 1e-10)
-#         batch, seqlen, _ = data.x.size()
-#         num_vertices = self.args['num_vertices']
-#         batch = batch // num_vertices
-#         data.x = self.in_proj(clip)  # (B*V, L, d_model)
-
-#         out = self.block(data) # (B*V, L, d_model)
-#         out = out.view(
-#                 batch, num_vertices, seqlen, -1
-#             )  
-        
-#         # TODO: pooling over the sequence length?
-#         out = out.mean(dim=2)
-#         # out = out[:, :, -1, :]  # (B, V, d_model)
-
-#         # TODO: pool over the vertices?
-#         out = out.mean(dim=1)  # (B, d_model)
-
-#         out = self.fc(out)  # (B, 1)        # apply fully connected linear layer from 32 features to 1 output
-#         return out
-
-#     def training_step(self, data, batch_idx):
-#         out = self(data)
-#         assert out.size(0) == data.y.size(0), "Batch size mismatch"
-#         assert out.size(1) == 1, "Output size mismatch: output has more than 1 feature"
-
-#         loss = F.mse_loss(torch.sigmoid(out), data.y.type(torch.float32).reshape(-1, 1))
-#         self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, batch_size=data.num_graphs, sync_dist=True)
-#         wandb.log({"train/loss": loss})
-#         return loss
-
-#     def validation_step(self, data, batch_idx):
-#         out = self(data)
-#         assert out.size(0) == data.y.size(0), "Batch size mismatch"
-#         assert out.size(1) == 1, "Output size mismatch: output has more than 1 feature"
-
-#         loss = F.mse_loss(torch.sigmoid(out), data.y.type(torch.float32).reshape(-1, 1))
-#         self.log("val/loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True, batch_size=data.num_graphs, sync_dist=True)
-#         wandb.log({"val/loss": loss})
-#         return loss
-    
-#     def test_step(self, data, batch_idx):
-#         out = self(data)
-#         assert out.size(0) == data.y.size(0), "Batch size mismatch"
-#         assert out.size(1) == 1, "Output size mismatch: output has more than 1 feature"
-
-#         loss = F.mse_loss(torch.sigmoid(out), data.y.type(torch.float32).reshape(-1, 1))
-#         self.log("test/loss", loss, 
-#                  on_step=False, 
-#                  on_epoch=True, 
-#                  prog_bar=True, 
-#                  logger=True, 
-#                  batch_size=data.num_graphs,
-#                  sync_dist=True)
-#         wandb.log({"test/loss": loss})
-#         return loss
-    
-#     def configure_optimizers(self):
-#         optimizer = optim.Adam(params=self.parameters(), lr=5e-4)
-#         scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, [1000, 2000], 0.3)
-#         return [optimizer], [{"scheduler": scheduler, "interval": "epoch"}]
     
 
 def main():
@@ -115,8 +33,8 @@ def main():
         'optimizer': 'adam',
         'scheduler': 'cosine',
         'num_epochs': 100,
-        'patience': 3,
-        'gpu_id': [5],
+        'patience': 5,
+        'gpu_id': [7],
         'accumulate_grad_batches': 1,
     }
     wandb.init(project="tgmamba", config=args)
@@ -127,7 +45,7 @@ def main():
     with open(os.path.join(args['save_dir'], "args.json"), "w") as f:
         json.dump(args, f, indent=4, sort_keys=True)
     
-    print("Building dataset...")
+    print("Loading datasets...")
     
     train_dataset = torch.load('TGMamba/data/processed_dataset/train_dataset.pt')
     val_dataset = torch.load('TGMamba/data/processed_dataset/val_dataset.pt')
@@ -173,14 +91,46 @@ def main():
     # Train
     trainer.fit(model, train_dataloader, val_dataloader)
     print("Training complete.")
-    # torch.save(model.state_dict(), 'TGMamba/results/checkpoint_abcd.pt' )
-    # print("Model checkpoint saved.")
-    # # Test
-    # trainer.test(
-    #     model=model,
-    #     ckpt_path="best",
-    #     test_dataloaders=test_dataloader,
-    # )
+
+    print("Running test...")
+
+    trainer.test(
+        model=model,
+        dataloaders=test_dataloader,
+    )
+    
+    print("Evaluating model on test set...")
+    model.eval()
+    y_true = []
+    y_pred = []
+    for data in test_dataloader:
+        data = data.to("cuda")
+        output = model(data)
+        output = torch.sigmoid(output).squeeze()
+        y_true.extend(data.y.cpu().numpy())
+        y_pred.extend((output > 0.5).cpu().numpy())
+
+    accuracy = metrics.accuracy_score(y_true, y_pred)
+    f1 = metrics.f1_score(y_true, y_pred)
+    fpr, tpr, thresholds = metrics.roc_curve(y_true, y_pred)
+    auc = metrics.auc(fpr, tpr)
+
+    print(f"Accuracy: {accuracy:.4f}")
+    print(f"F1-score: {f1:.4f}")
+    print(f"AUC-ROC: {auc:.4f}")
+    wandb.log({
+        "test/accuracy": accuracy,
+        "test/f1_score": f1,
+        "test/auc_roc": auc
+    })
+    # wandb.log({"test/roc_curve": wandb.plot.roc_curve(y_true, y_pred)})
+
+
+    # Save ROC curve data
+    from scipy.io import savemat
+    mdic = {"roc_fpr": fpr, "roc_tpr": tpr}
+    savemat("TGMamba/results/test_roc.mat", mdic)
+
 
 if __name__ == "__main__":
     main()

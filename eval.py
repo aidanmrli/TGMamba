@@ -66,6 +66,13 @@ def main():
     print(f"Accuracy: {accuracy:.4f}")
     print(f"F1-score: {f1:.4f}")
     print(f"AUC-ROC: {auc:.4f}")
+    wandb.log({
+        "test/accuracy": accuracy,
+        "test/f1_score": f1,
+        "test/auc_roc": auc
+    })
+    wandb.log({"test/roc_curve": wandb.plot.roc_curve(y_true, y_pred)})
+
 
     # Save ROC curve data
     from scipy.io import savemat
