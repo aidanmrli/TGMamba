@@ -21,6 +21,9 @@ Requirements:
 
 ## Usage (key modifications)
 
+### Data preprocessing
+See the data folder for process_dataset.py. The saved processed data will be in the data folder.
+
 ### Selective SSM
 
 Mamba is based on a selective SSM layer, which is the focus of the paper (Section 3; Algorithm 2).
