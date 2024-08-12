@@ -32,6 +32,13 @@ with h5py.File('/home/data_shared/clip_data.h5', "r") as f:
 with h5py.File('/home/data_shared/label.h5', "r") as f: 
     Label = np.array(f[list(f.keys())[0]])
 
+# NOTE: EVAL Load EEG data and labels 
+with h5py.File('/home/data_shared/clip_data_eval.h5', "r") as f:
+    EEG_eval = np.array(f[list(f.keys())[0]])
+
+with h5py.File('/home/data_shared/label_eval.h5', "r") as f: 
+    Label_eval = np.array(f[list(f.keys())[0]])
+
 assert EEG.shape[0] == Label.shape[0], "Data and label size mismatch"
 assert EEG.shape[1] == 10, "Number of time points mismatch"
 assert EEG.shape[2] == 19, "Number of electrodes mismatch"
@@ -58,17 +65,41 @@ for idx in tqdm(range(EEG.shape[0])):
         elec_pos=torch.tensor(pos)
     ))
 
-# Split the dataset into train, validation, and test sets
-train_size = int(0.8 * len(dataset))
-val_size = int(0.1 * len(dataset))
-test_size = len(dataset) - train_size - val_size
+# Split the dataset into train, validation sets
+train_size = int(0.9 * len(dataset))
+val_size = len(dataset) - train_size
 
-train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, val_size, test_size])
+test_dataset = []
+is_fft = False
+
+for idx in tqdm(range(EEG_eval.shape[0])):
+    eeg_clip = EEG_eval[idx,:,:,:]
+    
+    if is_fft:
+        eeg_clip = np.log(np.abs(fft(eeg_clip,axis=2)[:,:,0:100]) + 1e-30)
+        
+    label = Label_eval[idx]
+
+    test_dataset.append(Data(
+        x=torch.tensor(eeg_clip).transpose(1,0),
+        y=torch.tensor(label, dtype=torch.long),
+        # batch=batch,
+        edge_weight=edge_weight.squeeze(0),    
+        edge_index=edge_index,
+        elec_pos=torch.tensor(pos)
+    ))
+
+train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
 
 save_dir = 'TGMamba/data/processed_dataset'
 os.makedirs(save_dir, exist_ok=True)
-torch.save(train_dataset, os.path.join(save_dir, 'train_dataset.pt'))
-torch.save(val_dataset, os.path.join(save_dir, 'val_dataset.pt'))
-torch.save(test_dataset, os.path.join(save_dir, 'test_dataset.pt'))
+if is_fft:
+    torch.save(train_dataset, os.path.join(save_dir, 'train_dataset_fft.pt'))
+    torch.save(val_dataset, os.path.join(save_dir, 'val_dataset_fft.pt'))
+    torch.save(test_dataset, os.path.join(save_dir, 'test_dataset_fft.pt'))
+else:
+    torch.save(train_dataset, os.path.join(save_dir, 'train_dataset_raw.pt'))
+    torch.save(val_dataset, os.path.join(save_dir, 'val_dataset_raw.pt'))
+    torch.save(test_dataset, os.path.join(save_dir, 'test_dataset_raw.pt'))
 
 print(f"Datasets saved in {save_dir}")

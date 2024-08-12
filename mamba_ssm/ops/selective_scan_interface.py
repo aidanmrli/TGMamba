@@ -182,9 +182,7 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta
             for t in range(seqlen):
                 # Extract the t-th timestep
                 u_t = u[:, :, :, t]  # Shape: (B, V, D)
-                # edge_index = edge_index.view(edge_weight.shape[0], 2, edge_weight.shape[1])
-                # edge_weight = edge_weight.view(edge_weight.shape[0], 1, edge_weight.shape[1])
-
+                
                 # Flatten for batched graph convolution
                 u_t = u_t.view(-1, u_t.size(2)) # (B*V, D)
                 
@@ -216,6 +214,7 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta
         C = repeat(C, "B G N L -> B (G H) N L", H=dim // C.shape[1])  # (B*V, D, L, N)
     last_state = None
     C = C.view(-1, num_vertices, *C.shape[1:])  # (B, V, D, L, N)
+    
     # Main selective scan loop
     for i in range(seqlen):
         # perform convolution on x before applying w_A

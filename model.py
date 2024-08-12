@@ -8,22 +8,34 @@ import wandb
 from torchmetrics import Accuracy, F1Score, AUROC
 
 class LightGTMamba(L.LightningModule):
-    def __init__(self, args, fire_rate, conv_type):
+    def __init__(self, 
+                 num_vertices=19, 
+                 conv_type='gconv', 
+                 seq_pool_type='last', 
+                 vertex_pool_type='mean', 
+                 d_model=32, 
+                 d_state=16, 
+                 d_conv=4, 
+                 lr=5e-4):
         super().__init__()
-        self.args = args
+        self.num_vertices = num_vertices
+        self.seq_pool_type = seq_pool_type
+        self.vertex_pool_type = vertex_pool_type
+        self.lr = lr
 
         # NOTE: these two are not used.
-        self.fire_rate = fire_rate  # probability determining how often neurons are updated.
-        self.conv_type = conv_type  # gconv or chebconv
+        # self.fire_rate = fire_rate  # probability determining how often neurons are updated.
+        # self.conv_type = conv_type  # gconv or chebconv
 
         self.in_proj = torch.nn.Linear(100, 32)     # from arshia's code
         self.block = TGMamba(
-            d_model=32,
-            d_state=16,
-            d_conv=4,
+            d_model=d_model,
+            d_state=d_state,
+            d_conv=d_conv,
             expand=2,
-            num_vertices=19
-        ).to("cuda")
+            num_vertices=self.num_vertices,
+            conv_type=conv_type,
+        )
         self.fc = torch.nn.Linear(32, 1)
         torch.set_float32_matmul_precision('high') 
 
@@ -49,25 +61,34 @@ class LightGTMamba(L.LightningModule):
         # Normalize input data
         clip = (data.x.float() - data.x.float().mean(2, keepdim=True)) / (data.x.float().std(2, keepdim=True) + 1e-10)
         batch, seqlen, _ = data.x.size()
-        num_vertices = self.args['num_vertices']
+        num_vertices = self.num_vertices
         batch = batch // num_vertices
         data.x = self.in_proj(clip)  # (B*V, L, d_model)
 
         out = self.block(data) # (B*V, L, d_model)
         out = out.view(
                 batch, num_vertices, seqlen, -1
-            )  
+            )  # (B, V, L, d_model)
         
         # pooling over the sequence length. consider mean vs max pooling
-        # out = out.mean(dim=2)
-        out, _ = out.max(dim=2)
-        # out = out[:, :, -1, :]  # (B, V, d_model)
+        if self.seq_pool_type == 'last':
+            out = out[:, :, -1, :]  # (B, V, d_model)
+        elif self.seq_pool_type == 'mean':
+            out = out.mean(dim=2)
+        elif self.seq_pool_type == 'max':
+            out, _ = out.max(dim=2)
+        else:
+            raise ValueError("Invalid sequence pooling type")
 
         # pool over the vertices. consider mean vs max pooling
-        # out = out.mean(dim=1)  # (B, d_model)
-        out, _ = out.max(dim=1)  # (B, d_model)
+        if self.vertex_pool_type == 'mean':
+            out = out.mean(dim=1)  # (B, d_model)
+        elif self.vertex_pool_type == 'max':
+            out, _ = out.max(dim=1)
+        else:
+            raise ValueError("Invalid vertex pooling type")
 
-        out = self.fc(out)  # (B, 1)        # apply fully connected linear layer from 32 features to 1 output
+        out = self.fc(out)  # (B, 1)
         return out
 
     def training_step(self, data, batch_idx):
@@ -155,6 +176,6 @@ class LightGTMamba(L.LightningModule):
         return loss
     
     def configure_optimizers(self):
-        optimizer = optim.Adam(params=self.parameters(), lr=5e-4)
+        optimizer = optim.Adam(params=self.parameters(), lr=self.lr)
         scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, [1000, 2000], 0.3)
         return [optimizer], [{"scheduler": scheduler, "interval": "epoch"}]

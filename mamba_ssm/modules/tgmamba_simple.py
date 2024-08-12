@@ -50,6 +50,7 @@ class TGMamba(nn.Module):
         layer_idx=None,
         device=None,
         dtype=None,
+        conv_type="gcnconv",
     ):
         factory_kwargs = {"device": device, "dtype": dtype}
         super().__init__()
@@ -64,23 +65,34 @@ class TGMamba(nn.Module):
 
         ################ NEW
         self.num_vertices = num_vertices  # Store number of vertices (EEG channels)
-        self.gconv_A = GCNConv(self.d_inner, self.d_inner)
-        self.gconv_B = GCNConv(self.d_inner, self.d_inner)
-        self.gconv_C = GCNConv(self.d_inner, self.d_inner)
+        if conv_type == "gcnconv":
+            self.gconv_A = GCNConv(self.d_inner, self.d_inner)
+            self.gconv_B = GCNConv(self.d_inner, self.d_inner)
+            self.gconv_C = GCNConv(self.d_inner, self.d_inner)
+        elif conv_type == "chebconv":
+            self.gconv_A = ChebConv(self.d_inner, self.d_inner, K=2)
+            self.gconv_B = ChebConv(self.d_inner, self.d_inner, K=2)
+            self.gconv_C = ChebConv(self.d_inner, self.d_inner, K=2)
+        elif conv_type == "graphconv":
+            self.gconv_A = GraphConv(self.d_inner, self.d_inner)
+            self.gconv_B = GraphConv(self.d_inner, self.d_inner)
+            self.gconv_C = GraphConv(self.d_inner, self.d_inner)
+        else:
+            raise NotImplementedError("Only GCNConv, ChebConv, and GraphConv are supported")
         ################
         
         # weights have shape (output_dim, input_dim). So (d_inner*2, d_model) = (64, 16)
         self.in_proj = nn.Linear(self.d_model, self.d_inner * 2, bias=bias, **factory_kwargs)  # weights (64, 16) 
 
-        # self.conv1d = nn.Conv1d(
-        #     in_channels=self.d_inner,   # 32
-        #     out_channels=self.d_inner,  # 32
-        #     bias=conv_bias, # True (default)
-        #     kernel_size=d_conv, # 4
-        #     groups=self.d_inner,    # 32
-        #     padding=d_conv - 1,    # 3
-        #     **factory_kwargs,
-        # )
+        self.conv1d = nn.Conv1d(
+            in_channels=self.d_inner,   # 32
+            out_channels=self.d_inner,  # 32
+            bias=conv_bias, # True (default)
+            kernel_size=d_conv, # 4
+            groups=self.d_inner,    # 32
+            padding=d_conv - 1,    # 3
+            **factory_kwargs,
+        )
 
         self.activation = "silu"
         self.act = nn.SiLU()      # TODO: Check what to do about this activation function
@@ -205,20 +217,22 @@ class TGMamba(nn.Module):
 
         # TODO: should we even do this convolution??
         # # Compute short convolution
-        # if conv_state is not None:
-        #     # If we just take x[:, :, -self.d_conv :], it will error if seqlen < self.d_conv
-        #     # Instead F.pad will pad with zeros if seqlen < self.d_conv, and truncate otherwise.
-        #     conv_state.copy_(F.pad(x, (self.d_conv - x.shape[-1], 0)))  # Update state (B*V, D, W)
-        # if causal_conv1d_fn is None:
-        #     x = self.act(self.conv1d(x)[..., :seqlen])
-        # else:
-        assert self.activation in ["silu", "swish"]
-            # x = causal_conv1d_fn(
-            #     x=x,
-            #     weight=rearrange(self.conv1d.weight, "d 1 w -> d w"),
-            #     bias=self.conv1d.bias,
-            #     activation=self.activation,
-            # )
+        if conv_state is not None:
+            # If we just take x[:, :, -self.d_conv :], it will error if seqlen < self.d_conv
+            # Instead F.pad will pad with zeros if seqlen < self.d_conv, and truncate otherwise.
+            conv_state.copy_(F.pad(x, (self.d_conv - x.shape[-1], 0)))  # Update state (B*V, D, W)
+
+        if causal_conv1d_fn is None:
+            x = self.act(self.conv1d(x)[..., :seqlen])
+        else:
+            assert self.activation in ["silu", "swish"]
+
+            x = causal_conv1d_fn(
+                x=x,
+                weight=rearrange(self.conv1d.weight, "d 1 w -> d w"),
+                bias=self.conv1d.bias,
+                activation=self.activation,
+            )
             
             # x has shape (B*V, d_inner, L)
         
