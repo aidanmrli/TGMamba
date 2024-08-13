@@ -12,7 +12,8 @@ class LightGTMamba(L.LightningModule):
                  num_vertices=19, 
                  conv_type='gconv', 
                  seq_pool_type='last', 
-                 vertex_pool_type='mean', 
+                 vertex_pool_type='mean',
+                 input_dim=100, 
                  d_model=32, 
                  d_state=16, 
                  d_conv=4, 
@@ -27,7 +28,8 @@ class LightGTMamba(L.LightningModule):
         # self.fire_rate = fire_rate  # probability determining how often neurons are updated.
         # self.conv_type = conv_type  # gconv or chebconv
 
-        self.in_proj = torch.nn.Linear(100, 32)     # from arshia's code
+        # if FFT, input_dim = 100. Else, input_dim = 200.
+        self.in_proj = torch.nn.Linear(input_dim, d_model)     # from arshia's code
         self.block = TGMamba(
             d_model=d_model,
             d_state=d_state,

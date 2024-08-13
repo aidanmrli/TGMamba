@@ -4,8 +4,6 @@ from lightning.pytorch.strategies import DDPStrategy
 import torch
 import os
 import json
-import torch.nn.functional as F
-from sklearn import metrics
 import torch.optim as optim
 from torch_geometric.loader import DataLoader
 from model import LightGTMamba
@@ -38,7 +36,8 @@ def main(args):
     model = LightGTMamba(num_vertices=args.num_vertices, 
                          conv_type=args.conv_type.lower(), 
                          seq_pool_type=args.seq_pool_type, 
-                         vertex_pool_type=args.vertex_pool_type, 
+                         vertex_pool_type=args.vertex_pool_type,
+                         input_dim=100 if args.dataset_has_fft else 200, 
                          d_model=args.model_dim, 
                          d_state=args.state_expansion_factor, 
                          d_conv=args.local_conv_width, 
@@ -48,10 +47,12 @@ def main(args):
     scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, [1000, 2000], 0.3)
 
     # Callbacks
+    checkpoint_filename = f"state-{args.state_expansion_factor}_seq-{args.seq_pool_type}_vp-{args.vertex_pool_type}_fft-{str(args.dataset_has_fft)}_{{epoch:02d}}.ckpt"
     checkpoint_callback = ModelCheckpoint(
         monitor="val/loss",
         mode="min",
         dirpath=args.save_dir,
+        filename=checkpoint_filename,
         save_last=True,
         save_top_k=1,
         auto_insert_metric_name=False,
@@ -110,7 +111,7 @@ if __name__ == "__main__":
     parser.add_argument('--optimizer', type=str, default='adam')
     parser.add_argument('--scheduler', type=str, default='cosine')
     parser.add_argument('--num_epochs', type=int, default=100)
-    parser.add_argument('--patience', type=int, default=5)
+    parser.add_argument('--patience', type=int, default=15)
     parser.add_argument('--gpu_id', nargs='+', type=int, default=[7])
     parser.add_argument('--accumulate_grad_batches', type=int, default=1)
     
