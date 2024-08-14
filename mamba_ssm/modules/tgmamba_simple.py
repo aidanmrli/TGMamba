@@ -144,11 +144,8 @@ class TGMamba(nn.Module):
         self.out_proj = nn.Linear(self.d_inner, self.d_model, bias=bias, **factory_kwargs)
 
     def forward(self, hidden_states, edge_index, edge_weight, inference_params=None):
-        """
-        data: torch_geometric.data.Data object
-        
-        Think of hidden_states as the input x, or u.
-        hidden_states: (B*V, L, D)
+        """        
+        hidden_states: (B*V, L, D) is torch_geometric.data.Data.x
             B*V: batch size * num_vertices
             L: sequence length
             D: dimension of the input (d_model)
@@ -280,13 +277,8 @@ class TGMamba(nn.Module):
         out = self.out_proj(y)  # (B*V, L, d_model)
         return out
 
-    def step(self, hidden_states, conv_state, ssm_state):
+    def step(self, hidden_states, conv_state, ssm_state, edge_index, edge_weight):
         """
-        TODO: need to revamp this function, are we just predicting
-        the next time step in the batch? should hidden_states be
-        called input or something instead? why did they call it hidden_states
-        in the first place if ssm_state is actually the hidden state?
-
         hidden_states: (B*V, L, D)
             B: batch size * num_vertices
             V: number of vertices
@@ -314,22 +306,21 @@ class TGMamba(nn.Module):
         x, z = xz.chunk(2, dim=-1)  # (B*V, d_inner)
 
         # Conv step
-        # TODO: no convolution
-        # if causal_conv1d_update is None:
-        #     conv_state.copy_(torch.roll(conv_state, shifts=-1, dims=-1))  # Update state (B*V, D, W)
-        #     conv_state[:, :, -1] = x
-        #     x = torch.sum(conv_state * rearrange(self.conv1d.weight, "d 1 w -> d w"), dim=-1)  # (B*V, D)
-        #     if self.conv1d.bias is not None:
-        #         x = x + self.conv1d.bias
-        #     x = self.act(x).to(dtype=dtype) # (B*V, D)
-        # else:
-        #     x = causal_conv1d_update(
-        #         x,  # (B*V, D)
-        #         conv_state,  # (B*V, D, W)
-        #         rearrange(self.conv1d.weight, "d 1 w -> d w"),
-        #         self.conv1d.bias,   # (D)
-        #         self.activation,    # "silu"
-        #     )
+        if causal_conv1d_update is None:
+            conv_state.copy_(torch.roll(conv_state, shifts=-1, dims=-1))  # Update state (B*V, D, W)
+            conv_state[:, :, -1] = x
+            x = torch.sum(conv_state * rearrange(self.conv1d.weight, "d 1 w -> d w"), dim=-1)  # (B*V, D)
+            if self.conv1d.bias is not None:
+                x = x + self.conv1d.bias
+            x = self.act(x).to(dtype=dtype) # (B*V, D)
+        else:
+            x = causal_conv1d_update(
+                x,  # (B*V, D)
+                conv_state,  # (B*V, D, W)
+                rearrange(self.conv1d.weight, "d 1 w -> d w"),
+                self.conv1d.bias,   # (D)
+                self.activation,    # "silu"
+            )
 
         # project from d_inner to dt_rank + d_state * 2
         x_db = self.x_proj(x)  # (B*V, dt_rank+2*d_state)
@@ -339,35 +330,28 @@ class TGMamba(nn.Module):
         A = -torch.exp(self.A_log.float())  # (d_inner, d_state)
 
         # SSM step
-        if selective_state_update is None:
-            # Discretize A and B
-            dt = F.softplus(dt + self.dt_proj.bias.to(dtype=dt.dtype))  # (B*V, d_inner)
-            dA = torch.exp(torch.einsum("bd,dn->bdn", dt, A))   # (B*V, d_inner, d_state) (B*V, )
-            dB = torch.einsum("bd,bn->bdn", dt, B)  # (B*V, d_inner, d_state)
+        # if selective_state_update is None:
+        # Discretize A and B
+        dt = F.softplus(dt + self.dt_proj.bias.to(dtype=dt.dtype))  # (B*V, d_inner)
+        dA = torch.exp(torch.einsum("bd,dn->bdn", dt, A))   # (B*V, d_inner, d_state) (B*V, )
+        dB = torch.einsum("bd,bn->bdn", dt, B)  # (B*V, d_inner, d_state)
 
-            # perform A and B convolutions on prev hidden state ssm_state and current input x
-            # TODO: Replace the manually computed convolution with the GCNConv
+        # perform A and B convolutions on prev hidden state ssm_state and current input x
+        conv_A_out = self.gconv_A(ssm_state, edge_index, edge_weight)  # (batch_size*V, d_state)
+        conv_B_out = self.gconv_B(x, edge_index, edge_weight)  # (batch_size*V, d_inner)
 
-            x_reshaped = x.view(self.batch_size, -1, self.d_inner)  # (batch_size, V, d_inner)
+        # x is (B*V, d_inner). dB is (B*V, d_inner, d_state)
+        ssm_state.copy_(conv_A_out * dA + rearrange(conv_B_out, "b d -> b d 1") * dB)
 
-            # perform graph convolution on hidden state and input
-            # TODO: check these shapes and get the edge_index
-            conv_A_out = self.gconv_A(ssm_state, edge_index)  # (batch_size, V, d_state)
-            conv_B_out = self.gconv_B(x_reshaped, edge_index)  # (batch_size, V, d_inner)
-
-            # x is (B*V, d_inner). dB is (B*V, d_inner, d_state)
-            ssm_state.copy_(conv_A_out * dA + rearrange(conv_B_out, "b d -> b d 1") * dB)
-
-            # perform C convolution on current ssm hidden state here
-            # TODO: check these shapes and get the edge_index
-            conv_C_out = self.gconv_C(ssm_state, edge_index)   # (batch_size, V, d_state)
-            y = torch.einsum("bdn,bn->bd", conv_C_out.to(dtype), C)
-            y = y + self.D.to(dtype) * x
-            y = y * self.act(z)  # (B*V, d_inner)
-        else:
-            y = selective_state_update(
-                ssm_state, x, dt, A, B, C, self.D, z=z, dt_bias=self.dt_proj.bias, dt_softplus=True
-            )
+        # perform C convolution on current ssm hidden state here
+        conv_C_out = self.gconv_C(ssm_state, edge_index)   # (batch_size*V, d_state)
+        y = torch.einsum("bdn,bn->bd", conv_C_out.to(dtype), C)  # (B*V, d_inner)
+        y = y + self.D.to(dtype) * x
+        y = y * self.act(z)  # (B*V, d_inner)
+        # else:
+        #     y = selective_state_update(
+        #         ssm_state, x, dt, A, B, C, self.D, z=z, dt_bias=self.dt_proj.bias, dt_softplus=True
+        #     )
 
         out = self.out_proj(y)  # (B*V, d_model)
         return out.unsqueeze(1), conv_state, ssm_state  # (B*V, 1, d_model), (B*V, D, W), (B*V, D, N)
