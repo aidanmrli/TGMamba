@@ -142,7 +142,7 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta
 
     batch = batch // num_vertices
 
-    u = u.view(-1, num_vertices, channels, seqlen)  # (B, V, D, L)
+    # u = u.view(-1, num_vertices, channels, seqlen)  # (B, V, D, L)
 
     delta = delta.float()
     if delta_bias is not None:
@@ -177,26 +177,11 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta
     # Compute deltaB * u, handling different shapes of B
     # APPLY convolution to u before multiplying with deltaB
     if gconv_B is not None:
-            # perform the graph convolution on the input u
-            u_conv = []
-            for t in range(seqlen):
-                # Extract the t-th timestep
-                u_t = u[:, :, :, t]  # Shape: (B, V, D)
-                
-                # Flatten for batched graph convolution
-                u_t = u_t.view(-1, u_t.size(2)) # (B*V, D)
-                
-                # u_t shape: (B*V, D)
-                # edge_index shape: (2, B*num_edges) 
-                # edge_weight shape: [B*num_edges]
-
-                # apply the batched graph convolution
-                u_t_conv = gconv_B(u_t, edge_index, edge_weight)   # (B*V, D)
-                u_t_conv = u_t_conv.view(batch, num_vertices, u_t.size(1))   # (B, V, D)
-                u_conv.append(u_t_conv)
-            
-            # Stack the convolved timesteps back together
-            u = torch.stack(u_conv, dim=-1)  # Shape: (B, V, D, L)
+        # TODO: vectorize the for loop performing the graph convolution on all timesteps of the input u
+        # perform the graph convolution on the input u
+        u_flat = u.reshape(-1, channels)  # (B*V*L, D)
+        u_conv = gconv_B(u_flat, edge_index.repeat(1, seqlen), edge_weight.repeat(seqlen))  # (B*V*L, D)
+        u = u_conv.view(batch, num_vertices, channels, seqlen)  # (B, V, D, L)
     # B = 32, V = 19, D = 64, N = 16, L = 10
     # B has shape (B*V, N, L) if variable
     # print("delta.shape: ", delta.shape, "B.shape: ", B.shape, "u.shape: ", u.shape)
@@ -220,12 +205,12 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta
         # perform convolution on x before applying w_A
         # x (B, V, D, N), (2, B*num_edges), (B*num_edges)
         # B = 32, V = 19, D = 64, N = 16, L = 10
-        x = x.view(batch * num_vertices, channels, dstate)   # (B*V, D, N)
-        conv_A = torch.zeros_like(x)
-        for j in range(dstate): # in range N
-            conv_A[:, :, j] = gconv_A(x[:, :, j], edge_index, edge_weight) if gconv_A is not None else x
-
-        conv_A = conv_A.view(batch, num_vertices, channels, dstate)   # Shape: (B, V, D, N)
+        x_flat = x.view(-1, channels)  # (B*V*N, D)
+        if gconv_A is not None:
+            conv_A = gconv_A(x_flat, edge_index.repeat(1, dstate), edge_weight.repeat(dstate))  # (B*V*N, D)
+            conv_A = conv_A.view(batch, num_vertices, channels, dstate)  # (B, V, D, N)
+        else:
+            conv_A = x
 
         # A_t h_t-1 + B_t u_t
         # want (B, V, D, N) + (B, V, D, N)
@@ -236,12 +221,12 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta
         if not is_variable_C:
             y = torch.einsum('bvdn,dn->bvd', x, C)
         else:
-            x = x.view(batch * num_vertices, channels, dstate)   # (B*V, D, N)
-            conv_C = torch.zeros_like(x)
-            for j in range(dstate): # in range N
-                conv_C[:, :, j] = gconv_C(x[:, :, j], edge_index, edge_weight) if gconv_C is not None else x
-
-            conv_C = conv_C.view(batch, num_vertices, channels, dstate)   # Shape: (B, V, D, N)
+            x_flat = x.view(-1, channels)  # (B*V*N, D)
+            if gconv_C is not None:
+                conv_C = gconv_C(x_flat, edge_index.repeat(1, dstate), edge_weight.repeat(dstate))  # (B*V*N, D)
+                conv_C = conv_C.view(batch, num_vertices, channels, dstate)  # (B, V, D, N)
+            else:
+                conv_C = x
 
             # C has shape (B, V, N, L) if variable
             # [32, 19, 16, 10]

@@ -20,14 +20,16 @@ def main(args):
         json.dump(vars(args), f, indent=4, sort_keys=True)
     
     print("Loading datasets...")
+    data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data/processed_dataset')
+
     if args.dataset_has_fft:
-        train_dataset = torch.load('data/processed_dataset/train_dataset_fft.pt')
-        val_dataset = torch.load('data/processed_dataset/val_dataset_fft.pt')
-        test_dataset = torch.load('data/processed_dataset/test_dataset_fft.pt')
+        train_dataset = torch.load(os.path.join(data_dir, 'train_dataset_fft.pt'))
+        val_dataset = torch.load(os.path.join(data_dir, 'val_dataset_fft.pt'))
+        test_dataset = torch.load(os.path.join(data_dir, 'test_dataset_fft.pt'))
     else:
-        train_dataset = torch.load('data/processed_dataset/train_dataset_raw.pt')
-        val_dataset = torch.load('data/processed_dataset/val_dataset_raw.pt')
-        test_dataset = torch.load('data/processed_dataset/test_dataset_raw.pt')
+        train_dataset = torch.load(os.path.join(data_dir, 'train_dataset_raw.pt'))
+        val_dataset = torch.load(os.path.join(data_dir, 'val_dataset_raw.pt'))
+        test_dataset = torch.load(os.path.join(data_dir, 'test_dataset_raw.pt'))
 
     train_dataloader = DataLoader(train_dataset, batch_size=args.train_batch_size, num_workers=args.num_workers)
     val_dataloader = DataLoader(val_dataset, batch_size=args.test_batch_size, num_workers=args.num_workers)
@@ -40,7 +42,8 @@ def main(args):
                          input_dim=100 if args.dataset_has_fft else 200, 
                          d_model=args.model_dim, 
                          d_state=args.state_expansion_factor, 
-                         d_conv=args.local_conv_width, 
+                         d_conv=args.local_conv_width,
+                         num_tgmamba_layers=args.num_tgmamba_layers, 
                          lr=args.lr_init)
 
     optimizer = optim.Adam(params=model.parameters(), lr=args.lr_init)
@@ -65,11 +68,13 @@ def main(args):
     lr_monitor = LearningRateMonitor(logging_interval="step")
 
     # Trainer
+    random_integer = int(torch.randint(0, 8, (1,)).item())
+
     trainer = L.Trainer(
         accelerator="gpu",
         max_epochs=args.num_epochs,
         callbacks=[checkpoint_callback, early_stopping_callback, lr_monitor],
-        devices=args.gpu_id,
+        devices=[random_integer], # args.gpu_id,
         accumulate_grad_batches=args.accumulate_grad_batches,
         enable_progress_bar=True,
         strategy=DDPStrategy(find_unused_parameters=False),
@@ -102,6 +107,7 @@ if __name__ == "__main__":
     parser.add_argument('--model_dim', type=int, default=32)
     parser.add_argument('--state_expansion_factor', type=int, default=16)
     parser.add_argument('--local_conv_width', type=int, default=4)
+    parser.add_argument('--num_tgmamba_layers', type=int, default=2)
     parser.add_argument('--num_vertices', type=int, default=19)
     parser.add_argument('--train_batch_size', type=int, default=1024)
     parser.add_argument('--val_batch_size', type=int, default=256)

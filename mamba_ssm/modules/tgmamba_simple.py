@@ -143,7 +143,7 @@ class TGMamba(nn.Module):
 
         self.out_proj = nn.Linear(self.d_inner, self.d_model, bias=bias, **factory_kwargs)
 
-    def forward(self, data, inference_params=None):
+    def forward(self, hidden_states, edge_index, edge_weight, inference_params=None):
         """
         data: torch_geometric.data.Data object
         
@@ -159,7 +159,6 @@ class TGMamba(nn.Module):
         """
         # print("TGMamba data.x.size: ", data.x.size())
 
-        hidden_states = data.x  # (batch * V, seqlen, 1)
         batch = hidden_states.shape[0] // self.num_vertices
         num_vertices = self.num_vertices
         seqlen = hidden_states.shape[1]
@@ -269,8 +268,8 @@ class TGMamba(nn.Module):
             gconv_A = self.gconv_A,
             gconv_B = self.gconv_B,
             gconv_C = self.gconv_C,
-            edge_index=data.edge_index,
-            edge_weight=data.edge_weight,
+            edge_index=edge_index,
+            edge_weight=edge_weight,
             num_vertices=self.num_vertices,
             act=self.act
         )

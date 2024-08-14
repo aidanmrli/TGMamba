@@ -16,7 +16,8 @@ class LightGTMamba(L.LightningModule):
                  input_dim=100, 
                  d_model=32, 
                  d_state=16, 
-                 d_conv=4, 
+                 d_conv=4,
+                 num_tgmamba_layers=2, 
                  lr=5e-4):
         super().__init__()
         self.num_vertices = num_vertices
@@ -24,20 +25,18 @@ class LightGTMamba(L.LightningModule):
         self.vertex_pool_type = vertex_pool_type
         self.lr = lr
 
-        # NOTE: these two are not used.
-        # self.fire_rate = fire_rate  # probability determining how often neurons are updated.
-        # self.conv_type = conv_type  # gconv or chebconv
-
         # if FFT, input_dim = 100. Else, input_dim = 200.
         self.in_proj = torch.nn.Linear(input_dim, d_model)     # from arshia's code
-        self.block = TGMamba(
-            d_model=d_model,
-            d_state=d_state,
-            d_conv=d_conv,
-            expand=2,
-            num_vertices=self.num_vertices,
-            conv_type=conv_type,
-        )
+        self.blocks = torch.nn.ModuleList([
+            TGMamba(
+                d_model=d_model,
+                d_state=d_state,
+                d_conv=d_conv,
+                expand=2,
+                num_vertices=self.num_vertices,
+                conv_type=conv_type,
+            ) for _ in range(num_tgmamba_layers)
+        ])
         self.fc = torch.nn.Linear(32, 1)
         torch.set_float32_matmul_precision('high') 
 
@@ -65,12 +64,14 @@ class LightGTMamba(L.LightningModule):
         batch, seqlen, _ = data.x.size()
         num_vertices = self.num_vertices
         batch = batch // num_vertices
-        data.x = self.in_proj(clip)  # (B*V, L, d_model)
 
-        out = self.block(data) # (B*V, L, d_model)
+        out = self.in_proj(clip)  # (B*V, L, d_model)
+        for block in self.blocks:
+            out = block(out, data.edge_index, data.edge_weight)  # (B*V, L, d_model)
+        
         out = out.view(
-                batch, num_vertices, seqlen, -1
-            )  # (B, V, L, d_model)
+            batch, num_vertices, seqlen, -1
+        )  # (B, V, L, d_model)
         
         # pooling over the sequence length. consider mean vs max pooling
         if self.seq_pool_type == 'last':
