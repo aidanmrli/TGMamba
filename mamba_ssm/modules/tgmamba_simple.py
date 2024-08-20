@@ -29,6 +29,8 @@ try:
 except ImportError:
     RMSNorm, layer_norm_fn, rms_norm_fn = None, None, None
 
+from mamba_ssm.ops.triton.layernorm_gated import RMSNorm as RMSNormGated
+
 
 class TGMamba(nn.Module):
     def __init__(
@@ -51,6 +53,7 @@ class TGMamba(nn.Module):
         device=None,
         dtype=None,
         conv_type="gcnconv",
+        rmsnorm=True,
     ):
         factory_kwargs = {"device": device, "dtype": dtype}
         super().__init__()
@@ -64,6 +67,7 @@ class TGMamba(nn.Module):
         self.layer_idx = layer_idx
 
         ################ NEW
+        self.rmsnorm = rmsnorm
         self.num_vertices = num_vertices  # Store number of vertices (EEG channels)
         if conv_type == "gcnconv":
             self.gconv_A = GCNConv(self.d_inner, self.d_inner)
@@ -141,6 +145,11 @@ class TGMamba(nn.Module):
         self.D = nn.Parameter(torch.ones(self.d_inner, device=device))  # Keep in fp32
         self.D._no_weight_decay = True
 
+        # Extra normalization layer right before output projection
+        if self.rmsnorm:
+            assert RMSNormGated is not None
+            self.norm = RMSNormGated(self.d_inner, eps=1e-5, norm_before_gate=False, **factory_kwargs)
+        
         self.out_proj = nn.Linear(self.d_inner, self.d_model, bias=bias, **factory_kwargs)
 
     def forward(self, hidden_states, edge_index, edge_weight, inference_params=None):
@@ -257,7 +266,7 @@ class TGMamba(nn.Module):
             B,   # (B*V, d_state, L)
             C,   # (B*V, d_state, L)
             self.D.float(),  # (d_inner)
-            z=z,  # (B*V, d_inner, L)
+            z=z if not self.rmsnorm else None,  # (B*V, d_inner, L)
             delta_bias=self.dt_proj.bias.float(),
             delta_softplus=True,
             return_last_state=ssm_state is not None,
@@ -274,6 +283,12 @@ class TGMamba(nn.Module):
             y, last_state = y
             ssm_state.copy_(last_state)
         y = rearrange(y, "b d l -> b l d")  # (B*V, L, d_inner)
+
+        # Multiply "gate" branch and apply extra normalization layer
+        if self.rmsnorm:
+            z = rearrange(z, "b d l -> b l d")  # (B*V, L, d_inner)
+            y = self.norm(y, z)
+
         out = self.out_proj(y)  # (B*V, L, d_model)
         return out
 
@@ -347,12 +362,13 @@ class TGMamba(nn.Module):
         conv_C_out = self.gconv_C(ssm_state, edge_index)   # (batch_size*V, d_state)
         y = torch.einsum("bdn,bn->bd", conv_C_out.to(dtype), C)  # (B*V, d_inner)
         y = y + self.D.to(dtype) * x
-        y = y * self.act(z)  # (B*V, d_inner)
+        # y = y * self.act(z)  # (B*V, d_inner)
         # else:
         #     y = selective_state_update(
         #         ssm_state, x, dt, A, B, C, self.D, z=z, dt_bias=self.dt_proj.bias, dt_softplus=True
         #     )
 
+        y = self.norm(y, z)
         out = self.out_proj(y)  # (B*V, d_model)
         return out.unsqueeze(1), conv_state, ssm_state  # (B*V, 1, d_model), (B*V, D, W), (B*V, D, N)
 
