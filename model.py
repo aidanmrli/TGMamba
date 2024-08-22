@@ -69,8 +69,12 @@ class LightGTMamba(L.LightningModule):
         batch = batch // num_vertices
 
         out = self.in_proj(clip)  # (B*V, L, d_model)
-        for block in self.blocks:
+        assert not torch.isnan(out).any(), "NaN in input data"
+
+        for i in range(len(self.blocks)):
+            block = self.blocks[i]
             out = block(out, data.edge_index, data.edge_weight)  # (B*V, L, d_model)
+            assert not torch.isnan(out).any(), "NaN in block output at layer {}".format(i)
         
         out = out.view(
             batch, num_vertices, seqlen, -1
@@ -112,7 +116,7 @@ class LightGTMamba(L.LightningModule):
         self.train_auroc(preds, targets)
 
         # Log metrics
-        self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True, logger=True, batch_size=data.num_graphs, sync_dist=True)
+        self.log("train/loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True, batch_size=data.num_graphs, sync_dist=True)
         self.log("train/accuracy", self.train_accuracy, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         self.log("train/f1", self.train_f1, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         self.log("train/auroc", self.train_auroc, on_step=False, on_epoch=True, prog_bar=True, logger=True)

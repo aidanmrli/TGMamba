@@ -42,11 +42,15 @@ with h5py.File('/home/data_shared/label_eval.h5', "r") as f:
 assert EEG.shape[0] == Label.shape[0], "Data and label size mismatch"
 assert EEG.shape[1] == 10, "Number of time points mismatch"
 assert EEG.shape[2] == 19, "Number of electrodes mismatch"
-assert EEG.shape[3] == 200, "Number of frequency bins mismatch"
+assert EEG.shape[3] == 200, "Number of time bins in each time point mismatch"
+# merge (10, 200) -> (2000)
+# (B, L=10, V=19, D=200) -> (B, V, L=2000, D=1) 
+# 1 feature per node
+
 # Prepare the dataset
 dataset = []
 # batch = np.ones((1,19))
-is_fft = True
+is_fft = False
 
 for idx in tqdm(range(EEG.shape[0])):
     eeg_clip = EEG[idx,:,:,:]
@@ -70,7 +74,6 @@ train_size = int(0.9 * len(dataset))
 val_size = len(dataset) - train_size
 
 test_dataset = []
-is_fft = True
 
 for idx in tqdm(range(EEG_eval.shape[0])):
     eeg_clip = EEG_eval[idx,:,:,:]

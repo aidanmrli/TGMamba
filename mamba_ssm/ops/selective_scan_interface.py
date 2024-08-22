@@ -134,14 +134,8 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta
     """
     dtype_in = u.dtype
     u = u.float()
-
-    # Reshape u from (B*V, D, L) to (B, V, D, L)
-    # print("selective_scan_ref u.shape: ", u.shape)
     batch, channels, seqlen = u.shape
-
     batch = batch // num_vertices
-
-    # u = u.view(-1, num_vertices, channels, seqlen)  # (B, V, D, L)
 
     delta = delta.float()
     if delta_bias is not None:
@@ -173,16 +167,15 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta
 
     # Precompute some values for efficiency. set max to 20 to avoid overflow
     deltaA = torch.exp(torch.clamp(torch.einsum('bvdl,dn->bvdln', delta, A), max=20.0))    # (B, V, D, L, N)
-    # Compute deltaB * u, handling different shapes of B
-    # APPLY convolution to u before multiplying with deltaB
+    
     if gconv_B is not None:
         # perform the graph convolution on the input u
         u = u.reshape(-1, channels)  # (B*V*L, D)
         u = gconv_B(u, edge_index.repeat(1, seqlen), edge_weight.repeat(seqlen))  # (B*V*L, D)
         u = u.view(batch, num_vertices, channels, seqlen)  # (B, V, D, L)
-    # B = 32, V = 19, D = 64, N = 16, L = 10
+
+    # Compute deltaB * u, handling different shapes of B
     # B has shape (B*V, N, L) if variable
-    # print("delta.shape: ", delta.shape, "B.shape: ", B.shape, "u.shape: ", u.shape)
     if not is_variable_B:
         deltaB_u = torch.einsum('bvdl,dn,bvdl->bvdln', delta, B, u) # (B, V, D, L, N)
     else:
@@ -197,42 +190,34 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta
         C = repeat(C, "B G N L -> B (G H) N L", H=dim // C.shape[1])  # (B*V, D, L, N)
     last_state = None
     C = C.view(-1, num_vertices, *C.shape[1:])  # (B, V, D, L, N)
-    
+
     # Main selective scan loop
     for i in range(seqlen):
         # perform convolution on x before applying w_A
-        # x (B, V, D, N), (2, B*num_edges), (B*num_edges)
-        # B = 32, V = 19, D = 64, N = 16, L = 10
         if gconv_A is not None:
             x = gconv_A(x.view(-1, channels), edge_index.repeat(1, dstate), edge_weight.repeat(dstate))  # (B*V*N, D)
             x = x.view(batch, num_vertices, channels, dstate)  # (B, V, D, N)
 
         # A_t h_t-1 + B_t u_t
         # want (B, V, D, N) + (B, V, D, N)
-        # conv_A shape: [32, 19, 64, 16] 
-        # deltaA shape:  [32, 19, 64, 10, 16] 
-        # deltaB_u shape: [32, 19, 64, 10, 16]
-        x = x * deltaA[:, :, :, i] + deltaB_u[:, :, :, i]  
-        if i == seqlen - 1:
-            last_state = x
+        x = x * deltaA[:, :, :, i] + deltaB_u[:, :, :, i]
             
         if not is_variable_C:
             y = torch.einsum('bvdn,dn->bvd', x, C)
         else:
             if gconv_C is not None:
-                x = gconv_C(x.view(-1, channels), edge_index.repeat(1, dstate), edge_weight.repeat(dstate))  # (B*V*N, D)
-                x = x.view(batch, num_vertices, channels, dstate)  # (B, V, D, N)
+                conv_C = gconv_C(x.view(-1, channels), edge_index.repeat(1, dstate), edge_weight.repeat(dstate))  # (B*V*N, D)
+                conv_C = conv_C.view(batch, num_vertices, channels, dstate)  # (B, V, D, N)
 
             # C has shape (B, V, N, L) if variable
-            # [32, 19, 16, 10]
             # want y to have shape (B, V, D)
-            
             if C.dim() == 4:
                 # y = torch.einsum('bdn,bn->bd', conv_C, C[:, :, :, i])   # want y= (B, V, D)
-                y = torch.einsum('bvdn,bvn->bvd', x, C[:, :, :, i])   # want y= (B, V, D)
+                y = torch.einsum('bvdn,bvn->bvd', conv_C, C[:, :, :, i])   # want y= (B, V, D)
             else:   # C dim is 5
-                y = torch.einsum('bdn,bdn->bd', x, C[:, :, :, :, i])
-        
+                y = torch.einsum('bdn,bdn->bd', conv_C, C[:, :, :, :, i])
+
+            del conv_C
         if y.is_complex():
             y = y.real * 2
         ys.append(y)
@@ -242,8 +227,6 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta
     y = torch.stack(ys, dim=3) # (batch dim L)
 
     # Apply skip connection if D is provided
-    # print("y.shape: ", y.shape, "D.shape: ", D.shape)
-    # print("u.shape: ", u.shape)
     out = y if D is None else y + u * rearrange(D, "d -> 1 1 d 1")
 
     # Apply gating if z is provided
@@ -254,8 +237,8 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta
     out = out.reshape(batch * num_vertices, dim, seqlen)
     out = out.to(dtype=dtype_in)
     if return_last_state:
-        last_state = last_state.reshape(-1, dim, dstate)
-        return out, last_state
+        x = x.reshape(-1, dim, dstate)
+        return out, x
     else:    
         return out
     

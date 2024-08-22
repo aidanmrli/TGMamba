@@ -19,14 +19,15 @@ def main(args):
     with open(os.path.join(args.save_dir, "args.json"), "w") as f:
         json.dump(vars(args), f, indent=4, sort_keys=True)
     
-    print("Loading datasets...")
-    data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'processed_dataset')
 
+    data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'processed_dataset')
     if args.dataset_has_fft:
+        print("Loading fft data from", data_dir)
         train_dataset = torch.load(os.path.join(data_dir, 'train_dataset_fft.pt'))
         val_dataset = torch.load(os.path.join(data_dir, 'test_dataset_fft.pt'))  # TODO: change this to val_dataset
         test_dataset = torch.load(os.path.join(data_dir, 'test_dataset_fft.pt'))
     else:
+        print("Loading raw data from", data_dir)
         train_dataset = torch.load(os.path.join(data_dir, 'train_dataset_raw.pt'))
         val_dataset = torch.load(os.path.join(data_dir, 'test_dataset_raw.pt'))  # TODO: change this to val_dataset
         test_dataset = torch.load(os.path.join(data_dir, 'test_dataset_raw.pt'))
@@ -34,8 +35,8 @@ def main(args):
     train_dataloader = DataLoader(train_dataset, batch_size=args.train_batch_size, num_workers=args.num_workers)
     val_dataloader = DataLoader(val_dataset, batch_size=args.test_batch_size, num_workers=args.num_workers)
     test_dataloader = DataLoader(test_dataset, batch_size=args.test_batch_size, num_workers=args.num_workers)
-    print("rmsnorm: ", args.rmsnorm)
-    print(args.rmsnorm)
+    print("Model parameters: ", args.state_expansion_factor, args.seq_pool_type, args.vertex_pool_type, args.conv_type, args.model_dim, args.local_conv_width, args.num_tgmamba_layers)
+    
     model = LightGTMamba(num_vertices=args.num_vertices, 
                          conv_type=args.conv_type.lower(), 
                          seq_pool_type=args.seq_pool_type, 
@@ -47,9 +48,6 @@ def main(args):
                          num_tgmamba_layers=args.num_tgmamba_layers, 
                          lr=args.lr_init,
                          rmsnorm=args.rmsnorm)
-
-    # optimizer = optim.Adam(params=model.parameters(), lr=args.lr_init)
-    # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, [1000, 2000], 0.3)
 
     # Callbacks
     checkpoint_filename = f"state-{args.state_expansion_factor}_seq-{args.seq_pool_type}_vp-{args.vertex_pool_type}_fft-{str(args.dataset_has_fft)}_{{epoch:02d}}.ckpt"
