@@ -4,3 +4,10 @@ build/
 **.so
 *.hip
 *_hip.*
+*lightning_logs/*
+*.log
+*.ckpt
+*.yaml
+*.json
+*wandb/
+*.pt

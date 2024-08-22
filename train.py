@@ -20,34 +20,36 @@ def main(args):
         json.dump(vars(args), f, indent=4, sort_keys=True)
     
     print("Loading datasets...")
-    data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data/processed_dataset')
+    data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'processed_dataset')
 
     if args.dataset_has_fft:
         train_dataset = torch.load(os.path.join(data_dir, 'train_dataset_fft.pt'))
-        val_dataset = torch.load(os.path.join(data_dir, 'val_dataset_fft.pt'))
+        val_dataset = torch.load(os.path.join(data_dir, 'test_dataset_fft.pt'))  # TODO: change this to val_dataset
         test_dataset = torch.load(os.path.join(data_dir, 'test_dataset_fft.pt'))
     else:
         train_dataset = torch.load(os.path.join(data_dir, 'train_dataset_raw.pt'))
-        val_dataset = torch.load(os.path.join(data_dir, 'val_dataset_raw.pt'))
+        val_dataset = torch.load(os.path.join(data_dir, 'test_dataset_raw.pt'))  # TODO: change this to val_dataset
         test_dataset = torch.load(os.path.join(data_dir, 'test_dataset_raw.pt'))
 
     train_dataloader = DataLoader(train_dataset, batch_size=args.train_batch_size, num_workers=args.num_workers)
     val_dataloader = DataLoader(val_dataset, batch_size=args.test_batch_size, num_workers=args.num_workers)
     test_dataloader = DataLoader(test_dataset, batch_size=args.test_batch_size, num_workers=args.num_workers)
-
+    print("rmsnorm: ", args.rmsnorm)
+    print(args.rmsnorm)
     model = LightGTMamba(num_vertices=args.num_vertices, 
                          conv_type=args.conv_type.lower(), 
                          seq_pool_type=args.seq_pool_type, 
                          vertex_pool_type=args.vertex_pool_type,
-                         input_dim=100 if args.dataset_has_fft else 200, 
+                         input_dim=train_dataset[0].x.shape[-1], 
                          d_model=args.model_dim, 
                          d_state=args.state_expansion_factor, 
                          d_conv=args.local_conv_width,
                          num_tgmamba_layers=args.num_tgmamba_layers, 
-                         lr=args.lr_init)
+                         lr=args.lr_init,
+                         rmsnorm=args.rmsnorm)
 
-    optimizer = optim.Adam(params=model.parameters(), lr=args.lr_init)
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, [1000, 2000], 0.3)
+    # optimizer = optim.Adam(params=model.parameters(), lr=args.lr_init)
+    # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, [1000, 2000], 0.3)
 
     # Callbacks
     checkpoint_filename = f"state-{args.state_expansion_factor}_seq-{args.seq_pool_type}_vp-{args.vertex_pool_type}_fft-{str(args.dataset_has_fft)}_{{epoch:02d}}.ckpt"
@@ -74,11 +76,14 @@ def main(args):
         accelerator="gpu",
         max_epochs=args.num_epochs,
         callbacks=[checkpoint_callback, early_stopping_callback, lr_monitor],
-        devices=[random_integer], # args.gpu_id,
+        devices=[5], # args.gpu_id,
         accumulate_grad_batches=args.accumulate_grad_batches,
         enable_progress_bar=True,
         strategy=DDPStrategy(find_unused_parameters=False),
         log_every_n_steps=10,
+        # NEW: gradient clipping
+        gradient_clip_val=1.0,
+        gradient_clip_algorithm='norm',
     )
 
     # Train
@@ -89,6 +94,7 @@ def main(args):
     trainer.test(
         model=model,
         dataloaders=test_dataloader,
+        ckpt_path="best",
     )
 
     # # Save ROC curve data
@@ -100,7 +106,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="TGMamba Training Script")
     parser.add_argument('--rand_seed', type=int, default=42)
     parser.add_argument('--save_dir', type=str, default='TGMamba/results')
-    parser.add_argument('--dataset_has_fft', type=bool, default=True)
+    parser.add_argument('--dataset_has_fft', action='store_true', help="Enable FFT-processed data in the model")
     parser.add_argument('--conv_type', type=str, default='gcnconv')
     parser.add_argument('--seq_pool_type', type=str, default='last')
     parser.add_argument('--vertex_pool_type', type=str, default='mean')
@@ -109,6 +115,7 @@ if __name__ == "__main__":
     parser.add_argument('--local_conv_width', type=int, default=4)
     parser.add_argument('--num_tgmamba_layers', type=int, default=2)
     parser.add_argument('--num_vertices', type=int, default=19)
+    parser.add_argument('--rmsnorm', action='store_true', help="Enable RMSNorm in the model")
     parser.add_argument('--train_batch_size', type=int, default=1024)
     parser.add_argument('--val_batch_size', type=int, default=256)
     parser.add_argument('--test_batch_size', type=int, default=256)

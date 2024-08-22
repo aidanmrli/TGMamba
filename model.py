@@ -40,7 +40,7 @@ class LightGTMamba(L.LightningModule):
                 rmsnorm=self.rmsnorm,
             ) for _ in range(num_tgmamba_layers)
         ])
-        self.fc = torch.nn.Linear(32, 1)
+        self.fc = torch.nn.Linear(d_model, 1)
         torch.set_float32_matmul_precision('high') 
 
         # Initialize metrics
@@ -104,6 +104,7 @@ class LightGTMamba(L.LightningModule):
         
         # Compute metrics
         preds = torch.sigmoid(out)
+        assert preds.size(0) == data.y.size(0), "Batch size mismatch"
         targets = data.y.type(torch.float32).reshape(-1, 1)
         loss = F.binary_cross_entropy_with_logits(out, targets)
         self.train_accuracy(preds, targets)
@@ -132,6 +133,7 @@ class LightGTMamba(L.LightningModule):
 
         # Compute metrics
         preds = torch.sigmoid(out)
+        assert preds.size(0) == data.y.size(0), "Batch size mismatch"
         targets = data.y.type(torch.float32).reshape(-1, 1)
         loss = F.binary_cross_entropy_with_logits(out, targets)
         self.val_accuracy(preds, targets)
@@ -151,38 +153,6 @@ class LightGTMamba(L.LightningModule):
             "val/auroc": self.val_auroc.compute()
         })
         return loss
-    
-    # def test_step(self, data, batch_idx):
-    #     out = self(data)
-    #     preds = torch.sigmoid(out)
-    #     targets = data.y.type(torch.float32).reshape(-1, 1)
-    #     loss = F.binary_cross_entropy_with_logits(out, targets)
-        
-    #     # Use self.log to accumulate metrics
-    #     self.log("test/loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True, batch_size=data.num_graphs, sync_dist=True)
-    #     self.test_accuracy(preds, targets)
-    #     self.test_f1(preds, targets)
-    #     self.test_auroc(preds, targets)
-        
-    #     return loss
-    
-    # def on_test_epoch_end(self):
-    #     test_loss = self.trainer.callback_metrics["test/loss"]
-    #     test_accuracy = self.test_accuracy.compute()
-    #     test_f1 = self.test_f1.compute()
-    #     test_auroc = self.test_auroc.compute()
-        
-    #     self.log("test/loss", test_loss)
-    #     self.log("test/accuracy", test_accuracy)
-    #     self.log("test/f1", test_f1)
-    #     self.log("test/auroc", test_auroc)
-        
-    #     wandb.log({
-    #         "test/loss": test_loss,
-    #         "test/accuracy": test_accuracy,
-    #         "test/f1": test_f1,
-    #         "test/auroc": test_auroc
-    #     })
 
     def test_step(self, data, batch_idx):
         out = self(data)

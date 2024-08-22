@@ -70,7 +70,7 @@ train_size = int(0.9 * len(dataset))
 val_size = len(dataset) - train_size
 
 test_dataset = []
-is_fft = False
+is_fft = True
 
 for idx in tqdm(range(EEG_eval.shape[0])):
     eeg_clip = EEG_eval[idx,:,:,:]
@@ -91,7 +91,10 @@ for idx in tqdm(range(EEG_eval.shape[0])):
 
 train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
 
-save_dir = 'TGMamba/data/processed_dataset'
+script_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(script_dir)
+home_dir = os.path.dirname(parent_dir)
+save_dir = os.path.join(home_dir, 'processed_dataset')
 os.makedirs(save_dir, exist_ok=True)
 if is_fft:
     torch.save(train_dataset, os.path.join(save_dir, 'train_dataset_fft.pt'))
