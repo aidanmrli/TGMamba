@@ -4,7 +4,6 @@ import torch
 import torch.nn.functional as F
 from torch.cuda.amp import custom_bwd, custom_fwd
 import torch_geometric
-from torch_geometric.nn import GCNConv
 from einops import rearrange, repeat
 
 try:
@@ -172,8 +171,8 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta
     x = A.new_zeros((batch, num_vertices, dim, dstate))     # (B, V, D, N)
     ys = []
 
-    # Precompute some values for efficiency
-    deltaA = torch.exp(torch.einsum('bvdl,dn->bvdln', delta, A))    # (B, V, D, L, N)
+    # Precompute some values for efficiency. set max to 20 to avoid overflow
+    deltaA = torch.exp(torch.clamp(torch.einsum('bvdl,dn->bvdln', delta, A), max=20.0))    # (B, V, D, L, N)
     # Compute deltaB * u, handling different shapes of B
     # APPLY convolution to u before multiplying with deltaB
     if gconv_B is not None:
