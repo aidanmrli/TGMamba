@@ -1,3 +1,4 @@
+# This script processes the EEG data and labels and creates a PyTorch Geometric dataset.
 import torch
 import numpy as np
 from tqdm import tqdm
@@ -9,7 +10,7 @@ import os
 
 # Load adjacency matrix
 adj = sio.loadmat('/home/data_shared/adj_mat.mat')['adj_mat']
-
+print(adj[0:5,0:5])
 # Create edge index and edge weight from adjacency matrix
 ind = (adj != 0) & (adj != 1)
 edge_index = np.argwhere(ind == True).T 
@@ -20,8 +21,14 @@ for i, e in enumerate(edge_index.T):
 
 edge_index = torch.tensor(edge_index, dtype=torch.long)
 edge_weight = torch.tensor(edge_weight, dtype=torch.float)
-print(edge_index.shape, edge_weight.shape)
-print("Max index in edge_index:", edge_index.max().item())
+
+# This graph basically has 36 undirected/bidirectional edges in the graph because each undirected edge has two directed edges.
+# There are 19 electrodes and 72 directional edges in the graph. 
+# Every directional edge has its opposite edge in the graph with the same weight.
+# The edge index is a 2x72 tensor, where each column represents an edge between two electrodes.
+# The edge weight is a 1x72 tensor, where each element represents the weight of the corresponding edge.
+# The adjacency matrix is a 19x19 tensor, where each element represents the weight of the edge between two electrodes.
+
 # Load electrode positions
 pos = sio.loadmat('/home/data_shared/position.mat')['pos'].T
 

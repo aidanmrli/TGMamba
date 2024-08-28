@@ -7,8 +7,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-import torch_geometric
 from torch_geometric.nn import GCNConv, ChebConv, GraphConv
+from mamba_ssm.modules.edge_learner import EdgeLearner
 
 from einops import rearrange, repeat
 
@@ -40,6 +40,7 @@ class TGMamba(nn.Module):
         d_conv=4,   # width of local 1D causal convolution
         expand=2,   # block expansion factor to get the number of channels D
         num_vertices=19,  # New parameter for number of EEG channels
+        num_edges=72,   # New parameter for number of edges
         dt_rank="auto",
         dt_min=0.001,
         dt_max=0.1,
@@ -54,6 +55,10 @@ class TGMamba(nn.Module):
         dtype=None,
         conv_type="gcnconv",
         rmsnorm=True,
+        learn_edges_before_ssm=True,
+        edge_learner_layers=1,
+        edge_learner_attention=True,
+        edge_learner_time_varying=True,
     ):
         factory_kwargs = {"device": device, "dtype": dtype}
         super().__init__()
@@ -69,6 +74,7 @@ class TGMamba(nn.Module):
         ################ NEW
         self.rmsnorm = rmsnorm
         self.num_vertices = num_vertices  # Store number of vertices (EEG channels)
+        self.edge_learner = EdgeLearner(d_model, num_vertices, num_edges, edge_learner_layers, use_attention=edge_learner_attention, time_varying=edge_learner_time_varying)
         if conv_type == "gcnconv":
             self.gconv_A = GCNConv(self.d_inner, self.d_inner)
             self.gconv_B = GCNConv(self.d_inner, self.d_inner)
@@ -158,9 +164,11 @@ class TGMamba(nn.Module):
             B*V: batch size * num_vertices
             L: sequence length
             D: dimension of the input (d_model)
-        edge_index: (2, E)
-            E: number of edges
-        edge_weight: (E,)
+        edge_index: (2, batch_size * num_edges) or (2, batch_size * num_edges, seq_len)
+            E: total number of edges in the batch
+        edge_index.shape:  torch.Size([2, batch_size * (72) num_edges_per_graph])
+        edge_weight: (E,) total number of edges in the batch
+        edge_weight.shape:  torch.Size([batch_size * (72) num_edges_per_graph])
         Returns: same shape as hidden_states
         """
         # print("TGMamba data.x.size: ", data.x.size())
@@ -220,7 +228,6 @@ class TGMamba(nn.Module):
         # else:
         x, z = xz.chunk(2, dim=1)  # we go from 2 * d_inner to d_inner. x and z are (B*V, d_inner, L)
 
-        # TODO: should we even do this convolution??
         # # Compute short convolution
         if conv_state is not None:
             # If we just take x[:, :, -self.d_conv :], it will error if seqlen < self.d_conv
@@ -259,6 +266,21 @@ class TGMamba(nn.Module):
         # print("Before selective_scan_ref")
         # print("A.shape: ", A.shape, "B.shape: ", B.shape, "C.shape: ", C.shape)
         assert self.activation in ["silu", "swish"]
+
+        # print("edge_weight before edge_learner: ", edge_weight)
+        # print("edge_weight.shape: ", edge_weight.shape)
+        # print("edge_weight.dim: ", edge_weight.dim())
+        # print("\n\n\n")
+        edge_index, edge_weight = self.edge_learner(hidden_states, edge_index, edge_weight)
+        # print("edge_weight after edge_learner: ", edge_weight)
+        # print("edge_weight.shape: ", edge_weight.shape)
+        # raise SystemExit("Stop here")
+        assert edge_weight.dim() == 2, "edge_weight should have 2 dimensions"
+        assert edge_weight.shape[-1] == seqlen, "edge_weight should have the same length as the sequence length"
+        assert edge_index.dim() == 3, "edge_index should have 3 dimensions" 
+        assert edge_index.shape[-1] == seqlen, "edge_index should have the same length as the sequence length"
+        assert edge_index.shape[0] == 2, "edge_index should have 2 rows"
+
         y = selective_scan_ref(
             x,   # (B*V, d_inner, L)
             dt,  # (B*V, d_inner, L)
@@ -290,7 +312,7 @@ class TGMamba(nn.Module):
             y = self.norm(y, z)
 
         out = self.out_proj(y)  # (B*V, L, d_model)
-        return out
+        return out, edge_index, edge_weight
 
     def step(self, hidden_states, conv_state, ssm_state, edge_index, edge_weight):
         """

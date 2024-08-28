@@ -128,6 +128,10 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta
     delta_softplus: Boolean, whether to apply softplus to delta
     return_last_state: Boolean, whether to return the last state
 
+    adj_mat is (batch*seq_len, num_nodes, num_nodes) -> edge_index, edge_weight
+    edge_index: Edge index tensor of shape (2, batch_size * num_edges, seq_len) 
+    edge_weight: Edge weight tensor of shape (batch_size * num_edges, seq_len)
+
     Returns:
     out: Output tensor of shape r(B, D, L)
     last_state (optional): Last state tensor of shape r(B D dstate) or c(B D dstate)
@@ -171,7 +175,10 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta
     if gconv_B is not None:
         # perform the graph convolution on the input u
         u = u.reshape(-1, channels)  # (B*V*L, D)
-        u = gconv_B(u, edge_index.repeat(1, seqlen), edge_weight.repeat(seqlen))  # (B*V*L, D)
+        # collapse the seqlen dimension into the batch dimension
+        # TODO: check if the reshape is being done correctly
+        # is this B*V*L or B*L*V? do the edge indices and edge weight correspond to the correct batch item in u?
+        u = gconv_B(u, edge_index.reshape(2, -1), edge_weight.view(-1))  # (B*V*L, D)
         u = u.view(batch, num_vertices, channels, seqlen)  # (B, V, D, L)
 
     # Compute deltaB * u, handling different shapes of B
@@ -195,18 +202,20 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta
     for i in range(seqlen):
         # perform convolution on x before applying w_A
         if gconv_A is not None:
-            x = gconv_A(x.view(-1, channels), edge_index.repeat(1, dstate), edge_weight.repeat(dstate))  # (B*V*N, D)
+            x = gconv_A(x.view(-1, channels), edge_index[:, :, i].repeat(1, dstate), edge_weight[:, i].repeat(dstate))  # (B*V*N, D)
             x = x.view(batch, num_vertices, channels, dstate)  # (B, V, D, N)
 
         # A_t h_t-1 + B_t u_t
         # want (B, V, D, N) + (B, V, D, N)
+        # x = act(x * deltaA[:, :, :, i] + deltaB_u[:, :, :, i])
         x = x * deltaA[:, :, :, i] + deltaB_u[:, :, :, i]
+
             
         if not is_variable_C:
             y = torch.einsum('bvdn,dn->bvd', x, C)
         else:
             if gconv_C is not None:
-                conv_C = gconv_C(x.view(-1, channels), edge_index.repeat(1, dstate), edge_weight.repeat(dstate))  # (B*V*N, D)
+                conv_C = gconv_C(x.view(-1, channels), edge_index[:, :, i].repeat(1, dstate), edge_weight[:, i].repeat(dstate))  # (B*V*N, D)
                 conv_C = conv_C.view(batch, num_vertices, channels, dstate)  # (B, V, D, N)
 
             # C has shape (B, V, N, L) if variable

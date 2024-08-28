@@ -47,17 +47,19 @@ def main(args):
                          d_conv=args.local_conv_width,
                          num_tgmamba_layers=args.num_tgmamba_layers, 
                          lr=args.lr_init,
-                         rmsnorm=args.rmsnorm)
+                         rmsnorm=args.rmsnorm,
+                         edge_learner_attention=args.edge_learner_attention,
+                         edge_learner_time_varying=args.edge_learner_time_varying,)
 
     # Callbacks
-    checkpoint_filename = f"state-{args.state_expansion_factor}_seq-{args.seq_pool_type}_vp-{args.vertex_pool_type}_fft-{str(args.dataset_has_fft)}_{{epoch:02d}}.ckpt"
+    checkpoint_filename = f"depth-{args.num_tgmamba_layers}-state-{args.state_expansion_factor}_conv-{args.conv_type}_seq-{args.seq_pool_type}_vp-{args.vertex_pool_type}_fft-{str(args.dataset_has_fft)}_{{epoch:02d}}"
     checkpoint_callback = ModelCheckpoint(
         monitor="val/loss",
         mode="min",
         dirpath=args.save_dir,
         filename=checkpoint_filename,
         save_last=True,
-        save_top_k=1,
+        save_top_k=3,  # Save top 3 models
         auto_insert_metric_name=False,
     )
 
@@ -74,7 +76,7 @@ def main(args):
         accelerator="gpu",
         max_epochs=args.num_epochs,
         callbacks=[checkpoint_callback, early_stopping_callback, lr_monitor],
-        devices=[5], # args.gpu_id,
+        devices=[6], # args.gpu_id,
         accumulate_grad_batches=args.accumulate_grad_batches,
         enable_progress_bar=True,
         strategy=DDPStrategy(find_unused_parameters=False),
@@ -88,12 +90,41 @@ def main(args):
     trainer.fit(model, train_dataloader, val_dataloader)
     print("Training complete.")
 
-    print("Running test...")
-    trainer.test(
+    # print("Running tests...")
+
+    # # Test last model
+    # print("Testing last model...")
+    # last_results = trainer.test(
+    #     model=model,
+    #     dataloaders=test_dataloader,
+    #     ckpt_path="last",
+    # )
+
+    # # Test second best model
+    # print("Testing second best model...")
+    # checkpoints = checkpoint_callback.best_k_models
+    # if len(checkpoints) > 1:
+    #     second_best_path = sorted(checkpoints.items(), key=lambda x: x[1])[1][0]
+    #     second_best_results = trainer.test(
+    #         model=model,
+    #         dataloaders=test_dataloader,
+    #         ckpt_path=second_best_path,
+    #     )
+    # else:
+    #     print("No second best model available.")
+
+    # Test best model
+    print("Testing best model...")
+    best_results = trainer.test(
         model=model,
         dataloaders=test_dataloader,
         ckpt_path="best",
     )
+
+    # Print or process the results as needed
+    print("Best model results:", best_results)
+    # print("Second best model results:", second_best_results if 'second_best_results' in locals() else "N/A")
+    # print("Last model results:", last_results)
 
     # # Save ROC curve data
     # from scipy.io import savemat
@@ -114,6 +145,9 @@ if __name__ == "__main__":
     parser.add_argument('--num_tgmamba_layers', type=int, default=2)
     parser.add_argument('--num_vertices', type=int, default=19)
     parser.add_argument('--rmsnorm', action='store_true', help="Enable RMSNorm in the model")
+    parser.add_argument('--edge_learner_layers', type=int, default=1)
+    parser.add_argument('--edge_learner_attention', action='store_true', help="Enable attention in the edge learner")
+    parser.add_argument('--edge_learner_time_varying', action='store_true', help="Enable time-varying edge weights in the edge learner")
     parser.add_argument('--train_batch_size', type=int, default=1024)
     parser.add_argument('--val_batch_size', type=int, default=256)
     parser.add_argument('--test_batch_size', type=int, default=256)

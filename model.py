@@ -10,7 +10,7 @@ from torchmetrics import Accuracy, F1Score, AUROC
 class LightGTMamba(L.LightningModule):
     def __init__(self, 
                  num_vertices=19, 
-                 conv_type='gconv', 
+                 conv_type='graphconv', 
                  seq_pool_type='last', 
                  vertex_pool_type='mean',
                  input_dim=100, 
@@ -19,13 +19,20 @@ class LightGTMamba(L.LightningModule):
                  d_conv=4,
                  num_tgmamba_layers=2, 
                  lr=5e-4,
-                 rmsnorm=True):
+                 rmsnorm=True,
+                 edge_learner_layers=1,
+                 edge_learner_attention=True,
+                 edge_learner_time_varying=True,
+                 **kwargs):
         super().__init__()
         self.num_vertices = num_vertices
         self.seq_pool_type = seq_pool_type
         self.vertex_pool_type = vertex_pool_type
         self.lr = lr
         self.rmsnorm = rmsnorm
+        self.edge_learner_layers = edge_learner_layers
+        self.edge_learner_attention = edge_learner_attention
+        self.edge_learner_time_varying = edge_learner_time_varying
 
         # if FFT, input_dim = 100. Else, input_dim = 200.
         self.in_proj = torch.nn.Linear(input_dim, d_model)     # from arshia's code
@@ -38,6 +45,10 @@ class LightGTMamba(L.LightningModule):
                 num_vertices=self.num_vertices,
                 conv_type=conv_type,
                 rmsnorm=self.rmsnorm,
+                learn_edges_before_ssm=True,
+                edge_learner_layers=edge_learner_layers,
+                edge_learner_attention=edge_learner_attention,
+                edge_learner_time_varying=edge_learner_time_varying,
             ) for _ in range(num_tgmamba_layers)
         ])
         self.fc = torch.nn.Linear(d_model, 1)
@@ -70,10 +81,11 @@ class LightGTMamba(L.LightningModule):
 
         out = self.in_proj(clip)  # (B*V, L, d_model)
         assert not torch.isnan(out).any(), "NaN in input data"
-
+        
+        edge_index, edge_weight = data.edge_index, data.edge_weight
         for i in range(len(self.blocks)):
             block = self.blocks[i]
-            out = block(out, data.edge_index, data.edge_weight)  # (B*V, L, d_model)
+            out, edge_index, edge_weight = block(out, edge_index, edge_weight)  # (B*V, L, d_model)
             assert not torch.isnan(out).any(), "NaN in block output at layer {}".format(i)
         
         out = out.view(
