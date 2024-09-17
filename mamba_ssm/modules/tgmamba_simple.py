@@ -2,12 +2,12 @@
 
 import math
 from typing import Optional
-
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-from torch_geometric.nn import GCNConv, ChebConv, GraphConv
+from torch_geometric.nn import GCNConv, ChebConv, GraphConv, GATv2Conv
 from mamba_ssm.modules.edge_learner import EdgeLearner
 
 from einops import rearrange, repeat
@@ -58,6 +58,7 @@ class TGMamba(nn.Module):
         learn_edges_before_ssm=True,
         edge_learner_layers=1,
         edge_learner_attention=True,
+        attn_threshold=0.1,
         edge_learner_time_varying=True,
     ):
         factory_kwargs = {"device": device, "dtype": dtype}
@@ -74,19 +75,25 @@ class TGMamba(nn.Module):
         ################ NEW
         self.rmsnorm = rmsnorm
         self.num_vertices = num_vertices  # Store number of vertices (EEG channels)
-        self.edge_learner = EdgeLearner(d_model, num_vertices, num_edges, edge_learner_layers, use_attention=edge_learner_attention, time_varying=edge_learner_time_varying)
+        self.edge_learner = EdgeLearner(d_model, 
+                                        num_vertices, 
+                                        num_edges, 
+                                        edge_learner_layers, 
+                                        use_attention=edge_learner_attention,
+                                        attention_threshold=attn_threshold,
+                                        time_varying=edge_learner_time_varying)
         if conv_type == "gcnconv":
-            self.gconv_A = GCNConv(self.d_inner, self.d_inner)
-            self.gconv_B = GCNConv(self.d_inner, self.d_inner)
-            self.gconv_C = GCNConv(self.d_inner, self.d_inner)
+            self.gconv_A = GCNConv(self.d_state, self.d_state, bias=False)
+            self.gconv_B = GCNConv(self.d_inner, self.d_inner, bias=False)
+            self.gconv_C = GCNConv(self.d_state, self.d_state, bias=False)
         elif conv_type == "chebconv":
-            self.gconv_A = ChebConv(self.d_inner, self.d_inner, K=2)
-            self.gconv_B = ChebConv(self.d_inner, self.d_inner, K=2)
-            self.gconv_C = ChebConv(self.d_inner, self.d_inner, K=2)
+            self.gconv_A = ChebConv(self.d_state, self.d_state, K=2, bias=False)
+            self.gconv_B = ChebConv(self.d_inner, self.d_inner, K=2, bias=False)
+            self.gconv_C = ChebConv(self.d_state, self.d_state, K=2, bias=False)
         elif conv_type == "graphconv":
-            self.gconv_A = GraphConv(self.d_inner, self.d_inner)
-            self.gconv_B = GraphConv(self.d_inner, self.d_inner)
-            self.gconv_C = GraphConv(self.d_inner, self.d_inner)
+            self.gconv_A = GraphConv(self.d_state, self.d_state, bias=False)
+            self.gconv_B = GraphConv(self.d_inner, self.d_inner, bias=False)
+            self.gconv_C = GraphConv(self.d_state, self.d_state, bias=False)
         else:
             raise NotImplementedError("Only GCNConv, ChebConv, and GraphConv are supported")
         ################
@@ -280,6 +287,7 @@ class TGMamba(nn.Module):
         assert edge_index.dim() == 3, "edge_index should have 3 dimensions" 
         assert edge_index.shape[-1] == seqlen, "edge_index should have the same length as the sequence length"
         assert edge_index.shape[0] == 2, "edge_index should have 2 rows"
+        assert not torch.isnan(x).any(), "NaN in x before ssm"
 
         y = selective_scan_ref(
             x,   # (B*V, d_inner, L)
@@ -305,6 +313,7 @@ class TGMamba(nn.Module):
             y, last_state = y
             ssm_state.copy_(last_state)
         y = rearrange(y, "b d l -> b l d")  # (B*V, L, d_inner)
+        assert not torch.isnan(y).any(), "NaN in y after ssm"
 
         # Multiply "gate" branch and apply extra normalization layer
         if self.rmsnorm:
@@ -312,6 +321,7 @@ class TGMamba(nn.Module):
             y = self.norm(y, z)
 
         out = self.out_proj(y)  # (B*V, L, d_model)
+        assert not torch.isnan(y).any(), "NaN in y after out_proj"
         return out, edge_index, edge_weight
 
     def step(self, hidden_states, conv_state, ssm_state, edge_index, edge_weight):

@@ -136,21 +136,28 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta
     out: Output tensor of shape r(B, D, L)
     last_state (optional): Last state tensor of shape r(B D dstate) or c(B D dstate)
     """
+    # edge_mask = (edge_index[0] != -1) & (edge_index[1] != -1)  # Assume -1 was used for padding
+    # assert edge_mask.shape == edge_weight.shape, "Edge mask and edge weight shape mismatch"
+    # edge_index = edge_index * edge_mask.unsqueeze(0)
+    # edge_weight = edge_weight * edge_mask
+    # assert edge_index.shape[0] == 2, "Edge index should have shape (2, num_edges)"
     dtype_in = u.dtype
     u = u.float()
-    batch, channels, seqlen = u.shape
+    batch, input_dim, seqlen = u.shape
     batch = batch // num_vertices
 
     delta = delta.float()
+    assert not torch.isnan(delta).any(), "NaN in computed delta"
+    
     if delta_bias is not None:
         delta = delta + delta_bias[..., None].float()
     if delta_softplus:
         delta = F.softplus(delta)
-    delta = delta.view(-1, num_vertices, channels, seqlen)  # (B, V, D, L)
+    delta = delta.view(-1, num_vertices, input_dim, seqlen)  # (B, V, D, L)
     if z is not None:
-        z = z.view(-1, num_vertices, channels, seqlen)
+        z = z.view(-1, num_vertices, input_dim, seqlen)
     dim, dstate = A.shape[0], A.shape[1]    # (D, N)
-
+    assert not torch.isnan(delta).any(), "NaN in computed delta after softplus"
     # Check if B and C are input-dependent (variable) or fixed
     is_variable_B = B.dim() >= 3
     is_variable_C = C.dim() >= 3
@@ -169,20 +176,25 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta
     x = A.new_zeros((batch, num_vertices, dim, dstate))     # (B, V, D, N)
     ys = []
 
-    # Precompute some values for efficiency. set max to 20 to avoid overflow
-    deltaA = torch.exp(torch.clamp(torch.einsum('bvdl,dn->bvdln', delta, A), max=20.0))    # (B, V, D, L, N)
+    # Precompute some values for efficiency. set max to 10 to avoid overflow
+    deltaA = torch.exp(torch.clamp(torch.einsum('bvdl,dn->bvdln', delta, A), max=10.0))    # (B, V, D, L, N)
     
+    assert not torch.isnan(u).any(), "NaN in input u"
     if gconv_B is not None:
         # perform the graph convolution on the input u
-        u = u.reshape(-1, channels)  # (B*V*L, D)
+        u = u.reshape(-1, input_dim)  # (B*V*L, D)
         # collapse the seqlen dimension into the batch dimension
         # TODO: check if the reshape is being done correctly
         # is this B*V*L or B*L*V? do the edge indices and edge weight correspond to the correct batch item in u?
-        u = gconv_B(u, edge_index.reshape(2, -1), edge_weight.view(-1))  # (B*V*L, D)
-        u = u.view(batch, num_vertices, channels, seqlen)  # (B, V, D, L)
+        # after the first gradient update
+        u = gconv_B(u, edge_index.reshape(2, -1), edge_weight.reshape(-1))  # (B*V*L, D)
+        u = u.view(batch, num_vertices, input_dim, seqlen)  # (B, V, D, L)
+        assert not torch.isnan(u).any(), "NaN in input u after B graph convolution"
+        
 
     # Compute deltaB * u, handling different shapes of B
     # B has shape (B*V, N, L) if variable
+    assert not torch.isnan(B).any(), "NaN in computed B"
     if not is_variable_B:
         deltaB_u = torch.einsum('bvdl,dn,bvdl->bvdln', delta, B, u) # (B, V, D, L, N)
     else:
@@ -195,6 +207,8 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta
             deltaB_u = torch.einsum('bvdl,bvdnl,bvdl->bvdln', delta, B, u)  # (B, V, D, L, N)
     if is_variable_C and C.dim() == 4:
         C = repeat(C, "B G N L -> B (G H) N L", H=dim // C.shape[1])  # (B*V, D, L, N)
+    assert not torch.isnan(deltaB_u).any(), "NaN in precomputed deltaB_u"
+    
     last_state = None
     C = C.view(-1, num_vertices, *C.shape[1:])  # (B, V, D, L, N)
 
@@ -202,21 +216,26 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta
     for i in range(seqlen):
         # perform convolution on x before applying w_A
         if gconv_A is not None:
-            x = gconv_A(x.view(-1, channels), edge_index[:, :, i].repeat(1, dstate), edge_weight[:, i].repeat(dstate))  # (B*V*N, D)
-            x = x.view(batch, num_vertices, channels, dstate)  # (B, V, D, N)
+            # repeat edge_index .repeat(1, dstate) and edge_weight .repeat(dstate)
+            x = gconv_A(rearrange(x, "b v d n -> (b v d) n", n=dstate), edge_index[:, :, i], edge_weight[:, i])  # (B*V*N, D)
+            x = x.view(batch, num_vertices, input_dim, dstate)  # (B, V, D, N)
+            assert not torch.isnan(x).any(), "NaN in hidden state x after A graph convolution at time step {}".format(i)
 
         # A_t h_t-1 + B_t u_t
         # want (B, V, D, N) + (B, V, D, N)
         # x = act(x * deltaA[:, :, :, i] + deltaB_u[:, :, :, i])
-        x = x * deltaA[:, :, :, i] + deltaB_u[:, :, :, i]
-
+        # print("x.shape: ", x.shape)
+        x = torch.addcmul(deltaB_u[:, :, :, i], x, deltaA[:, :, :, i])
+        # x = x * deltaA[:, :, :, i] + deltaB_u[:, :, :, i]
+        assert not torch.isnan(x).any(), "NaN in hidden state x at time step {} after ssm equation".format(i)
             
         if not is_variable_C:
             y = torch.einsum('bvdn,dn->bvd', x, C)
         else:
-            if gconv_C is not None:
-                conv_C = gconv_C(x.view(-1, channels), edge_index[:, :, i].repeat(1, dstate), edge_weight[:, i].repeat(dstate))  # (B*V*N, D)
-                conv_C = conv_C.view(batch, num_vertices, channels, dstate)  # (B, V, D, N)
+            if gconv_C is not None:               
+                conv_C = gconv_C(rearrange(x, "b v d n -> (b v d) n", n=dstate), edge_index[:, :, i], edge_weight[:, i])  # (B*V*N, D)
+                conv_C = conv_C.view(batch, num_vertices, input_dim, dstate)  # (B, V, D, N)
+                assert not torch.isnan(conv_C).any(), "NaN in conv_C at time step {}".format(i)
 
             # C has shape (B, V, N, L) if variable
             # want y to have shape (B, V, D)
@@ -229,9 +248,9 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta
             del conv_C
         if y.is_complex():
             y = y.real * 2
+        assert not torch.isnan(y).any(), "NaN in output token y at time step {}".format(i)
         ys.append(y)
     
-
     # stack y's into a single sequence tensor
     y = torch.stack(ys, dim=3) # (batch dim L)
 
@@ -246,7 +265,7 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta
     out = out.reshape(batch * num_vertices, dim, seqlen)
     out = out.to(dtype=dtype_in)
     if return_last_state:
-        x = x.reshape(-1, dim, dstate)
+        x = x.reshape(-1, dim, dstate) # (B*V, D, dstate)
         return out, x
     else:    
         return out
@@ -466,7 +485,7 @@ def mamba_inner_ref(
         self.dt_proj.weight,  # (d_inner, dt_rank)
         self.out_proj.weight,  # (d_inner, d_model)
         self.out_proj.bias,  # (d_model)
-        A,  # (D, N) or (d_inner, d_state) representing D different structured N x N matrices for each of the D channels
+        A,  # (D, N) or (d_inner, d_state) representing D different structured N x N matrices for each of the D input_dim
         None,  # input-dependent B
         None,  # input-dependent C
         self.D.float(),  # (d_inner) ie (D)
