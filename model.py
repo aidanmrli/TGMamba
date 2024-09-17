@@ -4,8 +4,9 @@ import torch.nn.functional as F
 from torch_geometric.data import Data
 import torch.optim as optim
 from mamba_ssm import TGMamba
-import wandb
 from torchmetrics import Accuracy, F1Score, AUROC
+from torch.optim.lr_scheduler import CosineAnnealingLR, CosineAnnealingWarmRestarts
+
 
 class LightGTMamba(L.LightningModule):
     def __init__(self, 
@@ -17,24 +18,33 @@ class LightGTMamba(L.LightningModule):
                  d_model=32, 
                  d_state=16, 
                  d_conv=4,
-                 num_tgmamba_layers=2, 
+                 num_tgmamba_layers=2,
+                 optimizer_name='adamw', 
                  lr=5e-4,
+                 weight_decay=1e-4,
                  rmsnorm=True,
                  edge_learner_layers=1,
                  edge_learner_attention=True,
                  edge_learner_time_varying=True,
+                 attn_threshold=0.1,
+                 pass_edges_to_next_layer=False,
                  **kwargs):
         super().__init__()
         self.num_vertices = num_vertices
         self.seq_pool_type = seq_pool_type
         self.vertex_pool_type = vertex_pool_type
         self.lr = lr
+        self.weight_decay = weight_decay
+        self.optimizer_name = optimizer_name
         self.rmsnorm = rmsnorm
         self.edge_learner_layers = edge_learner_layers
         self.edge_learner_attention = edge_learner_attention
         self.edge_learner_time_varying = edge_learner_time_varying
+        self.pass_edges_to_next_layer = pass_edges_to_next_layer
 
         # if FFT, input_dim = 100. Else, input_dim = 200.
+        print("Input dim: ", input_dim)
+        print("d_model: ", d_model)
         self.in_proj = torch.nn.Linear(input_dim, d_model)     # from arshia's code
         self.blocks = torch.nn.ModuleList([
             TGMamba(
@@ -48,6 +58,7 @@ class LightGTMamba(L.LightningModule):
                 learn_edges_before_ssm=True,
                 edge_learner_layers=edge_learner_layers,
                 edge_learner_attention=edge_learner_attention,
+                attn_threshold=attn_threshold,
                 edge_learner_time_varying=edge_learner_time_varying,
             ) for _ in range(num_tgmamba_layers)
         ])
@@ -55,17 +66,9 @@ class LightGTMamba(L.LightningModule):
         torch.set_float32_matmul_precision('high') 
 
         # Initialize metrics
-        self.train_accuracy = Accuracy(task="binary")
-        self.train_f1 = F1Score(task="binary")
-        self.train_auroc = AUROC(task="binary")
-
-        self.val_accuracy = Accuracy(task="binary")
-        self.val_f1 = F1Score(task="binary")
-        self.val_auroc = AUROC(task="binary")
-
-        self.test_accuracy = Accuracy(task="binary")
-        self.test_f1 = F1Score(task="binary")
-        self.test_auroc = AUROC(task="binary")
+        self.accuracy = Accuracy(task="binary")
+        self.f1 = F1Score(task="binary")
+        self.auroc = AUROC(task="binary")
 
     def forward(self, data: Data):
         """
@@ -74,18 +77,21 @@ class LightGTMamba(L.LightningModule):
         Output: torch.Tensor of shape (B, 1) representing predictions
         """
         # Normalize input data
-        clip = (data.x.float() - data.x.float().mean(2, keepdim=True)) / (data.x.float().std(2, keepdim=True) + 1e-10)
+        # clip = (data.x.float() - data.x.float().mean(2, keepdim=True)) / (data.x.float().std(2, keepdim=True) + 1e-10)
         batch, seqlen, _ = data.x.size()
         num_vertices = self.num_vertices
         batch = batch // num_vertices
-
-        out = self.in_proj(clip)  # (B*V, L, d_model)
+        # print("data.x.size(): ", data.x.size())
+        out = self.in_proj(data.x)  # (B*V, L, d_model)
         assert not torch.isnan(out).any(), "NaN in input data"
-        
+        # out = data.x
         edge_index, edge_weight = data.edge_index, data.edge_weight
         for i in range(len(self.blocks)):
             block = self.blocks[i]
-            out, edge_index, edge_weight = block(out, edge_index, edge_weight)  # (B*V, L, d_model)
+            if self.pass_edges_to_next_layer:
+                out, edge_index, edge_weight = block(out, edge_index, edge_weight)  # (B*V, L, d_model)
+            else:
+                out, _, _ = block(out, edge_index, edge_weight)
             assert not torch.isnan(out).any(), "NaN in block output at layer {}".format(i)
         
         out = out.view(
@@ -123,22 +129,20 @@ class LightGTMamba(L.LightningModule):
         assert preds.size(0) == data.y.size(0), "Batch size mismatch"
         targets = data.y.type(torch.float32).reshape(-1, 1)
         loss = F.binary_cross_entropy_with_logits(out, targets)
-        self.train_accuracy(preds, targets)
-        self.train_f1(preds, targets)
-        self.train_auroc(preds, targets)
+        accuracy = self.accuracy(preds, targets)
+        f1 = self.f1(preds, targets)
+        auroc = self.auroc(preds, targets)
 
-        # Log metrics
-        self.log("train/loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True, batch_size=data.num_graphs, sync_dist=True)
-        self.log("train/accuracy", self.train_accuracy, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log("train/f1", self.train_f1, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log("train/auroc", self.train_auroc, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-
-        wandb.log({
+        # Create log dictionary
+        log_dict = {
             "train/loss": loss,
-            "train/accuracy": self.train_accuracy.compute(),
-            "train/f1": self.train_f1.compute(),
-            "train/auroc": self.train_auroc.compute()
-        })
+            "train/accuracy": accuracy,
+            "train/f1": f1,
+            "train/auroc": auroc,
+        }
+
+        # Log all metrics at once
+        self.log_dict(log_dict, on_step=False, on_epoch=True, prog_bar=True, logger=True, batch_size=data.num_graphs, sync_dist=True)
 
         return loss
 
@@ -152,23 +156,20 @@ class LightGTMamba(L.LightningModule):
         assert preds.size(0) == data.y.size(0), "Batch size mismatch"
         targets = data.y.type(torch.float32).reshape(-1, 1)
         loss = F.binary_cross_entropy_with_logits(out, targets)
-        self.val_accuracy(preds, targets)
-        self.val_f1(preds, targets)
-        self.val_auroc(preds, targets)
+        accuracy = self.accuracy(preds, targets)
+        f1 = self.f1(preds, targets)
+        auroc = self.auroc(preds, targets)
 
-        # Log metrics
-        self.log("val/loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True, batch_size=data.num_graphs, sync_dist=True)
-        self.log("val/accuracy", self.val_accuracy, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log("val/f1", self.val_f1, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log("val/auroc", self.val_auroc, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-
-        wandb.log({
+        log_dict = {
             "val/loss": loss,
-            "val/accuracy": self.val_accuracy.compute(),
-            "val/f1": self.val_f1.compute(),
-            "val/auroc": self.val_auroc.compute()
-        })
-        return loss
+            "val/accuracy": accuracy,
+            "val/f1": f1,
+            "val/auroc": auroc,
+        }
+
+        self.log_dict(log_dict, on_step=False, on_epoch=True, prog_bar=True, logger=True, batch_size=data.num_graphs, sync_dist=True)
+
+        return {"loss": loss, "auroc": auroc}
 
     def test_step(self, data, batch_idx):
         out = self(data)
@@ -178,26 +179,59 @@ class LightGTMamba(L.LightningModule):
         preds = torch.sigmoid(out)
         targets = data.y.type(torch.float32).reshape(-1, 1)
         loss = F.binary_cross_entropy_with_logits(out, targets)
-        self.test_accuracy(preds, targets)
-        self.test_f1(preds, targets)
-        self.test_auroc(preds, targets)
+        accuracy = self.accuracy(preds, targets)
+        f1 = self.f1(preds, targets)
+        auroc = self.auroc(preds, targets)
 
-        # Log metrics
-        self.log("test/loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True, batch_size=data.num_graphs, sync_dist=True)
-        self.log("test/accuracy", self.test_accuracy, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log("test/f1", self.test_f1, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        self.log("test/auroc", self.test_auroc, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-
-        wandb.log({
+        log_dict = {
             "test/loss": loss,
-            "test/accuracy": self.test_accuracy.compute(),
-            "test/f1": self.test_f1.compute(),
-            "test/auroc": self.test_auroc.compute()
-        })        
-        
+            "test/accuracy": accuracy,
+            "test/f1": f1,
+            "test/auroc": auroc,
+        }
+
+        self.log_dict(log_dict, on_step=False, on_epoch=True, prog_bar=True, logger=True, batch_size=data.num_graphs, sync_dist=True)
+
         return loss
     
+    def on_train_epoch_end(self):
+        # Reset metrics at the end of each training epoch
+        self.accuracy.reset()
+        self.f1.reset()
+        self.auroc.reset()
+
+    def on_validation_epoch_end(self):
+        # Reset metrics at the end of each validation epoch
+        self.accuracy.reset()
+        self.f1.reset()
+        self.auroc.reset()
+
+    def on_test_epoch_end(self):
+        # Reset metrics at the end of each test epoch
+        self.accuracy.reset()
+        self.f1.reset()
+        self.auroc.reset()
+    
     def configure_optimizers(self):
-        optimizer = optim.Adam(params=self.parameters(), lr=self.lr)
-        scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, [1000, 2000], 0.3)
-        return [optimizer], [{"scheduler": scheduler, "interval": "epoch"}]
+        if self.optimizer_name == "adam":
+            optimizer = optim.Adam(
+                params=self.parameters(),
+                lr=self.lr,
+                weight_decay=self.weight_decay,
+            )
+        elif self.optimizer_name == "adamw":
+            optimizer = optim.AdamW(
+                params=self.parameters(), lr=self.lr, weight_decay=self.weight_decay
+            )
+        else:
+            raise NotImplementedError
+        # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=100)
+        scheduler = CosineAnnealingWarmRestarts(
+            optimizer,
+            T_0=10,
+            T_mult=2,
+            eta_min=1e-6,
+            last_epoch=-1
+        )
+        return {"optimizer": optimizer, "lr_scheduler": scheduler}
+        # return [optimizer], [{"scheduler": scheduler, "interval": "epoch"}]
