@@ -7,11 +7,11 @@ import torch.nn.functional as F
 from torch import Tensor
 from einops import rearrange, repeat
 # use torch geometric 2.3.0 versions
-from torch_geometric.utils import remove_self_loops, add_self_loops
+from torch_geometric.utils import remove_self_loops, add_self_loops, to_dense_adj
 
 
 class EdgeLearner(nn.Module):
-    def __init__(self, d_model, num_vertices, num_edges, num_layers=1, use_attention=True, attention_threshold=0.1, time_varying=True):
+    def __init__(self, d_model, num_vertices, num_edges, num_layers=1, use_attention=True, attention_threshold=0.1, time_varying=True, temperature=0.01):
         super().__init__()
         self.d_model = d_model
         self.num_vertices = num_vertices
@@ -27,6 +27,8 @@ class EdgeLearner(nn.Module):
             # self.attn_skip_param = nn.Parameter(torch.tensor(0.5))
             self.attn_threshold = attention_threshold
             self.attn_scale = torch.sqrt(torch.tensor(d_model, dtype=torch.float))
+            self.softmax_temperature = temperature
+
         else:
             if num_layers == 1:
                 self.edge_transform = nn.Linear(num_edges, num_edges)
@@ -55,7 +57,6 @@ class EdgeLearner(nn.Module):
         """
         batch_size = hidden_states.size(0) // self.num_vertices
         seq_len = hidden_states.size(1)
-        
         # means we only have edges for each item in the batch, not for each time step
         if edge_weight.dim() < 2:
             edge_index = repeat(edge_index, 'c b -> c b l', c=2, l=seq_len)
@@ -71,14 +72,15 @@ class EdgeLearner(nn.Module):
                 Q = self.Q_proj(hidden_states)  # (batch_size, num_vertices, seq_len, d_model)
                 K = self.K_proj(hidden_states)  # (batch_size, num_vertices, seq_len, d_model)
                 attention_scores = torch.einsum('bvld,bwld->bvwl', Q, K) / self.attn_scale
-                # attention_scores = F.softmax(attention_scores, dim=2)  # (batch_size, num_vertices, num_vertices, seq_len)
+                attention_scores = F.softmax(attention_scores / self.softmax_temperature, dim=-2)  # (batch_size, num_vertices, num_vertices, seq_len
+                attention_scores = F.softmax(attention_scores / self.softmax_temperature, dim=-3)  # (batch_size, num_vertices, num_vertices, seq_len)              
 
                 # make the attention scores symmetric for the undirected graph
                 attention_scores = (attention_scores + attention_scores.transpose(1, 2)) / 2
                 
                 # Prune attention scores below threshold
                 attention_scores = torch.where(attention_scores >= self.attn_threshold, attention_scores, torch.zeros_like(attention_scores))
-                
+
                 edge_index_all = []
                 edge_weight_all = []
                 
