@@ -107,6 +107,7 @@ class EdgeLearner(nn.Module):
                 padded_edge_index_all = []
                 padded_edge_weight_all = []
 
+                # the number of these is equal to the sequence length
                 for edge_index, edge_weight in zip(edge_index_all, edge_weight_all):
                     num_edges = edge_index.size(1)
                     padding_size = max_edges - num_edges

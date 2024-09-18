@@ -121,6 +121,7 @@ if __name__ == "__main__":
     parser.add_argument('--edge_learner_layers', type=int, default=1)
     parser.add_argument('--edge_learner_attention', action='store_true', help="Enable attention in the edge learner")
     parser.add_argument('--attn_threshold', type=float, default=0.1)
+    parser.add_argument('--attn_softmax_temp', type=float, default=0.01)
     parser.add_argument('--edge_learner_time_varying', action='store_true', help="Enable time-varying edge weights in the edge learner")
     parser.add_argument('--train_batch_size', type=int, default=1024)
     parser.add_argument('--val_batch_size', type=int, default=256)

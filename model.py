@@ -27,6 +27,7 @@ class LightGTMamba(L.LightningModule):
                  edge_learner_attention=True,
                  edge_learner_time_varying=True,
                  attn_threshold=0.1,
+                 attn_softmax_temp=0.01,
                  pass_edges_to_next_layer=False,
                  **kwargs):
         super().__init__()
@@ -55,11 +56,11 @@ class LightGTMamba(L.LightningModule):
                 num_vertices=self.num_vertices,
                 conv_type=conv_type,
                 rmsnorm=self.rmsnorm,
-                learn_edges_before_ssm=True,
                 edge_learner_layers=edge_learner_layers,
                 edge_learner_attention=edge_learner_attention,
-                attn_threshold=attn_threshold,
                 edge_learner_time_varying=edge_learner_time_varying,
+                attn_threshold=attn_threshold,
+                attn_softmax_temp=attn_softmax_temp,
             ) for _ in range(num_tgmamba_layers)
         ])
         self.fc = torch.nn.Linear(d_model, 1)

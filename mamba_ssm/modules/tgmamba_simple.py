@@ -55,11 +55,11 @@ class TGMamba(nn.Module):
         dtype=None,
         conv_type="gcnconv",
         rmsnorm=True,
-        learn_edges_before_ssm=True,
         edge_learner_layers=1,
         edge_learner_attention=True,
         attn_threshold=0.1,
         edge_learner_time_varying=True,
+        attn_softmax_temp=0.01,
     ):
         factory_kwargs = {"device": device, "dtype": dtype}
         super().__init__()
@@ -81,7 +81,9 @@ class TGMamba(nn.Module):
                                         edge_learner_layers, 
                                         use_attention=edge_learner_attention,
                                         attention_threshold=attn_threshold,
-                                        time_varying=edge_learner_time_varying)
+                                        time_varying=edge_learner_time_varying,
+                                        temperature=attn_softmax_temp)
+        self.time_varying_attention = edge_learner_time_varying and edge_learner_attention
         if conv_type == "gcnconv":
             self.gconv_A = GCNConv(self.d_state, self.d_state, bias=False)
             self.gconv_B = GCNConv(self.d_inner, self.d_inner, bias=False)
@@ -94,6 +96,10 @@ class TGMamba(nn.Module):
             self.gconv_A = GraphConv(self.d_state, self.d_state, bias=False)
             self.gconv_B = GraphConv(self.d_inner, self.d_inner, bias=False)
             self.gconv_C = GraphConv(self.d_state, self.d_state, bias=False)
+        elif conv_type == "gatv2conv":
+            self.gconv_A = GATv2Conv(self.d_state, self.d_state, heads=1, concat=False, bias=False)
+            self.gconv_B = GATv2Conv(self.d_inner, self.d_inner, heads=1, concat=False, bias=False)
+            self.gconv_C = GATv2Conv(self.d_state, self.d_state, heads=1, concat=False, bias=False)
         else:
             raise NotImplementedError("Only GCNConv, ChebConv, and GraphConv are supported")
         ################
@@ -307,7 +313,8 @@ class TGMamba(nn.Module):
             edge_index=edge_index,
             edge_weight=edge_weight,
             num_vertices=self.num_vertices,
-            act=self.act
+            act=self.act,
+            time_varying_attention=self.time_varying_attention
         )
         if ssm_state is not None:
             y, last_state = y

@@ -112,7 +112,7 @@ def selective_scan_fn(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta_
 
 def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta_softplus=False,
                        gconv_A=None, gconv_B=None, gconv_C=None,
-                       edge_index=None, edge_weight=None, num_vertices=19, act=None, return_last_state=False):
+                       edge_index=None, edge_weight=None, num_vertices=19, act=None, time_varying_attention=False, return_last_state=False):
     """
     Implements the selective scan operation for the Mamba SSM.
     
@@ -136,11 +136,12 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta
     out: Output tensor of shape r(B, D, L)
     last_state (optional): Last state tensor of shape r(B D dstate) or c(B D dstate)
     """
-    # edge_mask = (edge_index[0] != -1) & (edge_index[1] != -1)  # Assume -1 was used for padding
-    # assert edge_mask.shape == edge_weight.shape, "Edge mask and edge weight shape mismatch"
-    # edge_index = edge_index * edge_mask.unsqueeze(0)
-    # edge_weight = edge_weight * edge_mask
-    # assert edge_index.shape[0] == 2, "Edge index should have shape (2, num_edges)"
+    if time_varying_attention:
+        edge_mask = (edge_index[0] != -1) & (edge_index[1] != -1)  # Assume -1 was used for padding
+        assert edge_mask.shape == edge_weight.shape, "Edge mask and edge weight shape mismatch"
+        edge_index = edge_index * edge_mask.unsqueeze(0)
+        edge_weight = edge_weight * edge_mask
+        assert edge_index.shape[0] == 2, "Edge index should have shape (2, num_edges)"
     dtype_in = u.dtype
     u = u.float()
     batch, input_dim, seqlen = u.shape
