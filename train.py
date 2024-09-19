@@ -66,7 +66,7 @@ def main(args):
     )
 
     early_stopping_callback = EarlyStopping(
-        monitor="val/loss", mode="min", patience=args.patience
+        monitor="val/auroc", mode="min", patience=args.patience
     )
 
     lr_monitor = LearningRateMonitor(logging_interval="step")
@@ -81,9 +81,6 @@ def main(args):
         accumulate_grad_batches=args.accumulate_grad_batches,
         enable_progress_bar=True,
         strategy=DDPStrategy(find_unused_parameters=False),
-        # NEW: gradient clipping
-        # gradient_clip_val=1.0,
-        # gradient_clip_algorithm='norm',
     )
 
     trainer.fit(model, train_dataloader, val_dataloader)
