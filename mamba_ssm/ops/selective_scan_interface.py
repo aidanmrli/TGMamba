@@ -254,7 +254,7 @@ def mamba_inner_ref(
         else:
             C = rearrange(C, "(b l) (dstate two) -> b dstate (l two)", l=seqlen, two=2).contiguous()
     
-    y = selective_scan_fn(x, delta, A, B, C, D, z=z, delta_bias=delta_bias, delta_softplus=True,
+    y = selective_scan_ref(x, delta, A, B, C, D, z=z, delta_bias=delta_bias, delta_softplus=True,
                           gconv_A=gconv_A, gconv_B=gconv_B, gconv_C=gconv_C,
                           edge_index=edge_index, edge_weight=edge_weight, num_vertices=num_vertices)
     return F.linear(rearrange(y, "b d l -> b l d"), out_proj_weight, out_proj_bias)

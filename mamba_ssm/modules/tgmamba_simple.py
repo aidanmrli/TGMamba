@@ -187,8 +187,6 @@ class TGMamba(nn.Module):
         edge_weight.shape:  torch.Size([batch_size * (72) num_edges_per_graph])
         Returns: same shape as hidden_states
         """
-        # print("TGMamba data.x.size: ", data.x.size())
-
         batch = hidden_states.shape[0] // self.num_vertices
         num_vertices = self.num_vertices
         seqlen = hidden_states.shape[1]

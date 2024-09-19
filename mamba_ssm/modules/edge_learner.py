@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
+# from torch_sparse import SparseTensor
 from einops import rearrange, repeat
 # use torch geometric 2.3.0 versions
 from torch_geometric.utils import remove_self_loops, add_self_loops, to_dense_adj
@@ -58,15 +59,23 @@ class EdgeLearner(nn.Module):
         batch_size = hidden_states.size(0) // self.num_vertices
         seq_len = hidden_states.size(1)
         # means we only have edges for each item in the batch, not for each time step
-        if edge_weight.dim() < 2:
+        if edge_weight.dim() < 2: # should always be true
+            batch = torch.arange(batch_size, device=edge_index.device).repeat_interleave(self.num_vertices)
+            batch_adj_mat = to_dense_adj(edge_index, batch=batch, edge_attr=edge_weight, max_num_nodes=self.num_vertices, batch_size=batch_size)
+            print("batch_adj_mat.size(): ", batch_adj_mat.size())
+            print("batch_adj_mat: ", batch_adj_mat[1, :10, :10])
+            assert batch_adj_mat.size() == (batch_size, self.num_vertices, self.num_vertices), "Batch adjacency matrix size mismatch"
             edge_index = repeat(edge_index, 'c b -> c b l', c=2, l=seq_len)
             edge_weight = repeat(edge_weight, 'b -> b l', l=seq_len)
-            
+        
         # edge_index should now have shape (2, batch_size * num_edges, seq_len)
         # edge_weight should now have shape (batch_size * num_edges, seq_len)
        
         if self.use_attention:
             hidden_states = hidden_states.view(batch_size, self.num_vertices, seq_len, -1)
+            
+            # if batch_adj_mat and batch_adj_mat.dim() == 2:
+            #     batch_adj_mat = batch_adj_mat.unsqueeze(0).expand(batch_size, self.num_vertices, self.num_vertices).contiguous()
            
             if self.time_varying:
                 Q = self.Q_proj(hidden_states)  # (batch_size, num_vertices, seq_len, d_model)
@@ -80,12 +89,15 @@ class EdgeLearner(nn.Module):
                 
                 # Prune attention scores below threshold
                 attention_scores = torch.where(attention_scores >= self.attn_threshold, attention_scores, torch.zeros_like(attention_scores))
-
                 edge_index_all = []
                 edge_weight_all = []
                 
                 for i in range(seq_len):
                     curr_adj_mat = attention_scores[:, :, :, i]
+                    if batch_adj_mat is not None:
+                        assert curr_adj_mat.size() == (batch_size, self.num_vertices, self.num_vertices)
+                        curr_adj_mat = curr_adj_mat + batch_adj_mat     # skip connection
+                    
                     edge_index, edge_weight = dense_to_sparse(curr_adj_mat)
                 
                     # add self-loop
@@ -135,6 +147,10 @@ class EdgeLearner(nn.Module):
 
                 # Prune attention scores below threshold
                 attention_scores = torch.where(attention_scores >= self.attn_threshold, attention_scores, torch.zeros_like(attention_scores))
+                
+                if batch_adj_mat is not None:
+                    assert attention_scores.size() == (batch_size, self.num_vertices, self.num_vertices)
+                    attention_scores = attention_scores + batch_adj_mat     # skip connection
                 edge_index, edge_weight = dense_to_sparse(attention_scores)
                 
                 # add self-loop
@@ -218,3 +234,20 @@ def dense_to_sparse(adj: Tensor) -> Tuple[Tensor, Tensor]:
         row = edge_index[1] + adj.size(-2) * edge_index[0]
         col = edge_index[2] + adj.size(-1) * edge_index[0]
         return torch.stack([row, col], dim=0), edge_attr
+
+# def edge_index_to_adj_matrix(edge_index, edge_weight, num_nodes, batch_size):
+#     # Ensure edge_index and edge_weight are on the same device
+#     device = edge_index.device
+    
+#     # Create a batch vector
+#     batch = torch.arange(batch_size, device=device).repeat_interleave(num_nodes)
+    
+#     # Create a sparse tensor
+#     adj = SparseTensor(row=edge_index[0], col=edge_index[1], value=edge_weight,
+#                        sparse_sizes=(batch_size * num_nodes, batch_size * num_nodes))
+    
+#     # Convert to a dense tensor and reshape
+#     adj_dense = adj.to_dense()
+#     adj_matrix = adj_dense.view(batch_size, num_nodes, num_nodes)
+    
+#     return adj_matrix

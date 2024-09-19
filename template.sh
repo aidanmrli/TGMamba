@@ -10,7 +10,7 @@ python train.py \
     --model_dim 32 \
     --state_expansion_factor 16 \
     --local_conv_width 4 \
-    --num_tgmamba_layers 2 \
+    --num_tgmamba_layers 1 \
     --num_vertices 19 \
     --rmsnorm \
     --edge_learner_layers 1 \
