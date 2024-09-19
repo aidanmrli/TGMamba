@@ -12,3 +12,6 @@ build/
 *wandb/
 *.pt
 *tgmamba_venv/*
+*.err*
+*.out*
+*.pkl*
