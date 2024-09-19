@@ -11,3 +11,4 @@ build/
 *.json
 *wandb/
 *.pt
+*tgmamba_venv/*

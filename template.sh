@@ -17,11 +17,11 @@ python train.py \
     --train_batch_size 256 \
     --val_batch_size 64 \
     --test_batch_size 64 \
-    --num_workers 16 \
+    --num_workers 12 \
     --lr_init 5e-4 \
     --optimizer adam \
     --scheduler cosine \
     --num_epochs 100 \
     --patience 20 \
-    --gpu_id 7 \
+    --gpu_id 0 \
     --accumulate_grad_batches 1

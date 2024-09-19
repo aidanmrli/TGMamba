@@ -12,7 +12,7 @@ from mamba_ssm.modules.edge_learner import EdgeLearner
 
 from einops import rearrange, repeat
 
-from mamba_ssm.ops.selective_scan_interface import selective_scan_fn, mamba_inner_fn, selective_scan_ref
+from mamba_ssm.ops.selective_scan_interface import selective_scan_ref
 
 try:
     from causal_conv1d import causal_conv1d_fn, causal_conv1d_update
@@ -83,7 +83,10 @@ class TGMamba(nn.Module):
                                         attention_threshold=attn_threshold,
                                         time_varying=edge_learner_time_varying,
                                         temperature=attn_softmax_temp)
-        self.time_varying_attention = edge_learner_time_varying and edge_learner_attention
+        if edge_learner_time_varying and edge_learner_attention:
+            self.time_varying_attention = True
+        else: 
+            self.time_varying_attention = False
         if conv_type == "gcnconv":
             self.gconv_A = GCNConv(self.d_state, self.d_state, bias=False)
             self.gconv_B = GCNConv(self.d_inner, self.d_inner, bias=False)

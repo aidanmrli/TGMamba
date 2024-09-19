@@ -130,7 +130,7 @@ if __name__ == "__main__":
     parser.add_argument('--scheduler', type=str, default='cosine')
     parser.add_argument('--num_epochs', type=int, default=100)
     parser.add_argument('--patience', type=int, default=15)
-    parser.add_argument('--gpu_id', nargs='+', type=int, default=[7])
+    parser.add_argument('--gpu_id', nargs='+', type=int, default=[0])
     parser.add_argument('--accumulate_grad_batches', type=int, default=1)
     
     args = parser.parse_args()
