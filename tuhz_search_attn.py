@@ -88,7 +88,7 @@ def objective(trial, args, train_dataloader, val_dataloader):
                 callbacks=[early_stop_callback, pruning_callback],
                 max_epochs=30,
                 accelerator="gpu",
-                devices=args.gpu_id,  # Use GPUs 3 and 4 (index 2 and 3)
+                devices=1,  # Use GPUs 3 and 4 (index 2 and 3)
                 # strategy="ddp",  # Enable DDP for multi-GPU training
                 accumulate_grad_batches=args.accumulate_grad_batches,
                 enable_progress_bar=True,
@@ -162,7 +162,7 @@ if __name__ == "__main__":
     parser.add_argument('--train_batch_size', type=int, default=64)
     parser.add_argument('--test_batch_size', type=int, default=64)
     parser.add_argument('--num_workers', type=int, default=12)
-    parser.add_argument('--gpu_id', nargs='+', type=int, default=[2], help="GPU IDs to use for training")
+    parser.add_argument('--gpu_id', nargs='+', type=int, default=[0], help="GPU IDs to use for training")
     parser.add_argument('--accumulate_grad_batches', type=int, default=1)
     parser.add_argument('--n_trials', type=int, default=300, help="Number of trials for Optuna")
     
