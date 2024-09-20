@@ -8,9 +8,9 @@ python train.py \
     --conv_type graphconv \
     --dataset_has_fft \
     --model_dim 32 \
-    --state_expansion_factor 16 \
+    --state_expansion_factor 32 \
     --local_conv_width 4 \
-    --num_tgmamba_layers 1 \
+    --num_tgmamba_layers 2 \
     --num_vertices 19 \
     --rmsnorm \
     --edge_learner_layers 1 \
@@ -19,7 +19,7 @@ python train.py \
     --test_batch_size 64 \
     --num_workers 12 \
     --lr_init 5e-4 \
-    --optimizer adam \
+    --optimizer adamw \
     --scheduler cosine \
     --num_epochs 100 \
     --patience 20 \

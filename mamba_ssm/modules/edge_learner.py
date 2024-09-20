@@ -62,8 +62,8 @@ class EdgeLearner(nn.Module):
         if edge_weight.dim() < 2: # should always be true
             batch = torch.arange(batch_size, device=edge_index.device).repeat_interleave(self.num_vertices)
             batch_adj_mat = to_dense_adj(edge_index, batch=batch, edge_attr=edge_weight, max_num_nodes=self.num_vertices, batch_size=batch_size)
-            print("batch_adj_mat.size(): ", batch_adj_mat.size())
-            print("batch_adj_mat: ", batch_adj_mat[1, :10, :10])
+            # print("batch_adj_mat.size(): ", batch_adj_mat.size())
+            # print("batch_adj_mat: ", batch_adj_mat[1, :10, :10])
             assert batch_adj_mat.size() == (batch_size, self.num_vertices, self.num_vertices), "Batch adjacency matrix size mismatch"
             edge_index = repeat(edge_index, 'c b -> c b l', c=2, l=seq_len)
             edge_weight = repeat(edge_weight, 'b -> b l', l=seq_len)
