@@ -23,8 +23,8 @@ class EdgeLearner(nn.Module):
         self.act = nn.SiLU()
 
         if use_attention:
-            self.Q_proj = nn.Linear(d_model, d_model)
-            self.K_proj = nn.Linear(d_model, d_model)
+            self.Q_proj = nn.Linear(d_model, d_model * 16)
+            self.K_proj = nn.Linear(d_model, d_model * 16)
             # self.attn_skip_param = nn.Parameter(torch.tensor(0.5))
             self.attn_threshold = attention_threshold
             self.attn_scale = torch.sqrt(torch.tensor(d_model, dtype=torch.float))
@@ -58,8 +58,9 @@ class EdgeLearner(nn.Module):
         """
         batch_size = hidden_states.size(0) // self.num_vertices
         seq_len = hidden_states.size(1)
+        batch_adj_mat = None
         # means we only have edges for each item in the batch, not for each time step
-        if edge_weight.dim() < 2: # should always be true
+        if edge_weight is not None and edge_weight.dim() < 2: # should always be true
             batch = torch.arange(batch_size, device=edge_index.device).repeat_interleave(self.num_vertices)
             batch_adj_mat = to_dense_adj(edge_index, batch=batch, edge_attr=edge_weight, max_num_nodes=self.num_vertices, batch_size=batch_size)
             # print("batch_adj_mat.size(): ", batch_adj_mat.size())
@@ -74,8 +75,8 @@ class EdgeLearner(nn.Module):
         if self.use_attention:
             hidden_states = hidden_states.view(batch_size, self.num_vertices, seq_len, -1)
             
-            # if batch_adj_mat and batch_adj_mat.dim() == 2:
-            #     batch_adj_mat = batch_adj_mat.unsqueeze(0).expand(batch_size, self.num_vertices, self.num_vertices).contiguous()
+            if batch_adj_mat is not None and batch_adj_mat.dim() == 2:
+                batch_adj_mat = batch_adj_mat.unsqueeze(0).expand(batch_size, self.num_vertices, self.num_vertices).contiguous()
            
             if self.time_varying:
                 Q = self.Q_proj(hidden_states)  # (batch_size, num_vertices, seq_len, d_model)
@@ -135,15 +136,20 @@ class EdgeLearner(nn.Module):
                     
             else:
                 # attention_scores = attention_scores.mean(dim=-1)  # (batch_size, num_vertices, num_vertices)
-                hidden_states = hidden_states.mean(dim=2)
+                hidden_states = hidden_states.mean(dim=2)   # (batch_size, num_vertices, d_model)
                  
                 Q = self.Q_proj(hidden_states)  # (batch_size, num_vertices, d_model)
                 K = self.K_proj(hidden_states)  # (batch_size, num_vertices, d_model)
                 attention_scores = torch.einsum('bvd,bwd->bvw', Q, K) / self.attn_scale
-                # attention_scores = F.softmax(attention_scores, dim=2)  # (batch_size, num_vertices, num_vertices, seq_len)
+                # print("attention scores shape: ", attention_scores.size())
+                # print("attention_scores before softmax ", attention_scores[0, :, :])
+                attention_scores = F.softmax(attention_scores / self.softmax_temperature, dim=-1)  # (batch_size, num_vertices, num_vertices)
+                # print("attention_scores after softmax ", attention_scores[0, :, :])
+                # print("attention scores shape: ", attention_scores.size())
+                
 
                 # make the attention scores symmetric for the undirected graph
-                attention_scores = (attention_scores + attention_scores.transpose(1, 2)) / 2
+                attention_scores = (attention_scores + attention_scores.transpose(-1, -2)) / 2
 
                 # Prune attention scores below threshold
                 attention_scores = torch.where(attention_scores >= self.attn_threshold, attention_scores, torch.zeros_like(attention_scores))
@@ -162,6 +168,8 @@ class EdgeLearner(nn.Module):
                     edge_attr=edge_weight,
                     fill_value=1,
                 )
+                # print("edge_index: ", edge_index.size())
+                # print("edge_weight: ", edge_weight.size())
             # use the attention scores as the edge indices and weights
 
         else:

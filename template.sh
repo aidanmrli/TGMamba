@@ -23,5 +23,8 @@ python train.py \
     --scheduler cosine \
     --num_epochs 100 \
     --patience 20 \
-    --gpu_id 0 \
-    --accumulate_grad_batches 1
+    --gpu_id 4 \
+    --edge_learner_attention \
+    --edge_learner_time_varying \
+    --attn_softmax_temp 0.01 \
+    --attn_threshold 0.1
