@@ -227,26 +227,26 @@ class LightGTMamba(L.LightningModule):
         else:
             raise NotImplementedError
             # Warm-up scheduler
-        warmup_scheduler = LinearLR(
-            optimizer, 
-            start_factor=0.1, 
-            end_factor=1.0, 
-            total_iters=5
-        )
+        # warmup_scheduler = LinearLR(
+        #     optimizer, 
+        #     start_factor=0.5, 
+        #     end_factor=1.0, 
+        #     total_iters=1
+        # )
 
         # Cosine annealing scheduler
         main_scheduler = CosineAnnealingLR(
             optimizer,
-            T_max=95,  # Total epochs - warmup epochs
+            T_max=100,  # Total epochs - warmup epochs
             eta_min=self.lr * 1e-2  # Minimum LR is 1% of initial LR
         )
 
-        # Combine schedulers
-        scheduler = SequentialLR(
-            optimizer,
-            schedulers=[warmup_scheduler, main_scheduler],
-            milestones=[5]  # Switch to main scheduler after 5 epochs
-        )
+        # # Combine schedulers
+        # scheduler = SequentialLR(
+        #     optimizer,
+        #     schedulers=[warmup_scheduler, main_scheduler],
+        #     milestones=[1]  # Switch to main scheduler after 5 epochs
+        # )
         # scheduler = CosineAnnealingWarmRestarts(
         #     optimizer,
         #     T_0=10,
@@ -254,5 +254,5 @@ class LightGTMamba(L.LightningModule):
         #     eta_min=1e-6,
         #     last_epoch=-1
         # )
-        return {"optimizer": optimizer, "lr_scheduler": scheduler, "monitor": "val/loss"}
+        return {"optimizer": optimizer, "lr_scheduler": main_scheduler, "monitor": "val/loss"}
         # return [optimizer], [{"scheduler": scheduler, "interval": "epoch"}]
