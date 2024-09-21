@@ -9,6 +9,10 @@ from torch_geometric.loader import DataLoader
 from model import LightGTMamba
 import argparse
 from pytorch_lightning.loggers import WandbLogger
+from data import DODHDataModule, TUHZDataModule
+
+DODH_RAW_DATA_DIR='/home/amli/dreem-learning-open/data/h5/dodh'
+
 
 def main(args):
     # Set random seed
@@ -19,28 +23,42 @@ def main(args):
     
 
     data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'processed_dataset')
-    if args.dataset_has_fft:
-        print("Loading fft data from", data_dir)
-        train_dataset = torch.load(os.path.join(data_dir, 'train_dataset_fft.pt'))
-        val_dataset = torch.load(os.path.join(data_dir, 'test_dataset_fft.pt'))  # TODO: change this to val_dataset
-        test_dataset = torch.load(os.path.join(data_dir, 'test_dataset_fft.pt'))
-    else:
-        print("Loading raw data from", data_dir)
-        # train_dataset_raw
-        train_dataset = torch.load(os.path.join(data_dir, 'train_dataset_raw_s4mer_normalized.pt'))
-        val_dataset = torch.load(os.path.join(data_dir, 'val_dataset_raw_s4mer_normalized.pt'))  # TODO: change this to val_dataset
-        test_dataset = torch.load(os.path.join(data_dir, 'train_dataset_raw_s4mer_normalized.pt'))
-
-    train_dataloader = DataLoader(train_dataset, batch_size=args.train_batch_size, num_workers=args.num_workers)
-    val_dataloader = DataLoader(val_dataset, batch_size=args.test_batch_size, num_workers=args.num_workers)
-    test_dataloader = DataLoader(test_dataset, batch_size=args.test_batch_size, num_workers=args.num_workers)
+    
+    # TODO: instead of loading the train dataset that way, use this datamodule
+    project_name_suffix = ""
+    stopping_callback_metric = ""
+    if args.dataset == 'dodh':
+        datamodule = DODHDataModule(
+                raw_data_path=DODH_RAW_DATA_DIR, 
+                dataset_name="dodh",  # should be 'dodh'
+                freq=250,    # args.sampling_freq = 250 Hz or if we make it lower then we can make the seq shorter
+                train_batch_size=args.train_batch_size,
+                test_batch_size=args.test_batch_size,
+                num_workers=args.num_workers,
+                standardize=True,
+                balanced_sampling=True,  # True
+                pin_memory=True,
+            )
+        stopping_callback_metric = "val/macro_f1"
+        project_name_suffix = "_dodh"
+    elif args.dataset == 'tuhz':
+        datamodule = TUHZDataModule(
+            data_dir=data_dir,
+            batch_size=args.train_batch_size,
+            num_workers=args.num_workers,
+            dataset_has_fft=args.dataset_has_fft,
+        )
+        stopping_callback_metric = "val/auroc"
+    # Prepare the data
+    datamodule.prepare_data()
+    datamodule.setup()
     print("Model parameters: ", args.state_expansion_factor, args.seq_pool_type, args.vertex_pool_type, args.conv_type, args.model_dim, args.local_conv_width, args.num_tgmamba_layers)
     
-    model = LightGTMamba(num_vertices=args.num_vertices, 
+    model = LightGTMamba(dataset=args.dataset, 
                          conv_type=args.conv_type.lower(), 
                          seq_pool_type=args.seq_pool_type, 
                          vertex_pool_type=args.vertex_pool_type,
-                         input_dim=train_dataset[0].x.shape[-1], 
+                         input_dim=datamodule.train_dataset[0].x.shape[-1], 
                          d_model=args.model_dim, 
                          d_state=args.state_expansion_factor, 
                          d_conv=args.local_conv_width,
@@ -49,14 +67,14 @@ def main(args):
                          lr=args.lr_init,
                          weight_decay=args.weight_decay,
                          rmsnorm=args.rmsnorm,
-                         edge_learner_attention=args.edge_learner_attention,
+                         edge_learner_attention=True,  # args.edge_learner_attention,
                          attn_threshold=args.attn_threshold,
-                         edge_learner_time_varying=args.edge_learner_time_varying,)
+                         edge_learner_time_varying=False,) # args.edge_learner_time_varying,)
 
     # Callbacks
     checkpoint_filename = f"depth-{args.num_tgmamba_layers}-state-{args.state_expansion_factor}_conv-{args.conv_type}_seq-{args.seq_pool_type}_vp-{args.vertex_pool_type}_fft-{str(args.dataset_has_fft)}_{{epoch:02d}}"
     checkpoint_callback = ModelCheckpoint(
-        monitor="val/auroc",
+        monitor=stopping_callback_metric,
         mode="max",
         dirpath=args.save_dir,
         filename=checkpoint_filename,
@@ -66,11 +84,12 @@ def main(args):
     )
 
     early_stopping_callback = EarlyStopping(
-        monitor="val/auroc", mode="min", patience=args.patience
+        monitor=stopping_callback_metric, mode="max", patience=args.patience
     )
 
     lr_monitor = LearningRateMonitor(logging_interval="step")
-    wandb_logger = WandbLogger(project="tgmamba", log_model="all", config=vars(args))
+    project_name = "tgmamba" + project_name_suffix
+    wandb_logger = WandbLogger(project=project_name, log_model="all", config=vars(args))
 
     trainer = L.Trainer(
         accelerator="gpu",
@@ -83,13 +102,12 @@ def main(args):
         strategy=DDPStrategy(find_unused_parameters=False),
     )
 
-    trainer.fit(model, train_dataloader, val_dataloader)
+    trainer.fit(model, datamodule=datamodule)
     print("Training complete.")
 
     print("Testing best model...")
     best_results = trainer.test(
-        model=model,
-        dataloaders=test_dataloader,
+        datamodule=datamodule,
         ckpt_path="best",
     )
 
@@ -105,26 +123,27 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="TGMamba Training Script")
     parser.add_argument('--rand_seed', type=int, default=42)
     parser.add_argument('--save_dir', type=str, default='TGMamba/results')
+    parser.add_argument('--dataset', type=str, default='tuhz')
     parser.add_argument('--dataset_has_fft', action='store_true', help="Enable FFT-processed data in the model")
-    parser.add_argument('--conv_type', type=str, default='gcnconv')
-    parser.add_argument('--seq_pool_type', type=str, default='last')
-    parser.add_argument('--vertex_pool_type', type=str, default='mean')
-    parser.add_argument('--model_dim', type=int, default=32)
-    parser.add_argument('--state_expansion_factor', type=int, default=16)
+    parser.add_argument('--conv_type', type=str, default='graphconv')
+    parser.add_argument('--seq_pool_type', type=str, default='mean')
+    parser.add_argument('--vertex_pool_type', type=str, default='max')
+    parser.add_argument('--model_dim', type=int, default=1)
+    parser.add_argument('--state_expansion_factor', type=int, default=32)
     parser.add_argument('--local_conv_width', type=int, default=4)
     parser.add_argument('--num_tgmamba_layers', type=int, default=2)
     parser.add_argument('--num_vertices', type=int, default=19)
     parser.add_argument('--rmsnorm', action='store_true', help="Enable RMSNorm in the model")
     parser.add_argument('--edge_learner_layers', type=int, default=1)
     parser.add_argument('--edge_learner_attention', action='store_true', help="Enable attention in the edge learner")
-    parser.add_argument('--attn_threshold', type=float, default=0.1)
+    parser.add_argument('--attn_threshold', type=float, default=0.2)
     parser.add_argument('--attn_softmax_temp', type=float, default=0.01)
     parser.add_argument('--edge_learner_time_varying', action='store_true', help="Enable time-varying edge weights in the edge learner")
-    parser.add_argument('--train_batch_size', type=int, default=1024)
+    parser.add_argument('--train_batch_size', type=int, default=4)
     parser.add_argument('--val_batch_size', type=int, default=256)
     parser.add_argument('--test_batch_size', type=int, default=256)
     parser.add_argument('--num_workers', type=int, default=16)
-    parser.add_argument('--lr_init', type=float, default=1e-3)
+    parser.add_argument('--lr_init', type=float, default=1e-4)
     parser.add_argument('--weight_decay', type=float, default=0.1)
     parser.add_argument('--optimizer_name', type=str, default='adamw')
     parser.add_argument('--scheduler', type=str, default='cosine')

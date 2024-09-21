@@ -84,11 +84,10 @@ class LightGTMamba(L.LightningModule):
         Output: torch.Tensor of shape (B, 1) representing predictions
         """
         # Normalize input data
-        # clip = (data.x.float() - data.x.float().mean(2, keepdim=True)) / (data.x.float().std(2, keepdim=True) + 1e-10)
+        # print("data.x.size(): ", data.x.size())
         batch, seqlen, _ = data.x.size()
         num_vertices = self.num_vertices
         batch = batch // num_vertices
-        print("data.x.size(): ", data.x.size())
         out = self.in_proj(data.x)  # (B*V, L, d_model)
         assert not torch.isnan(out).any(), "NaN in input data"
         # out = data.x
