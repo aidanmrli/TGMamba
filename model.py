@@ -148,6 +148,7 @@ class LightGTMamba(L.LightningModule):
         assert out.size(0) == data.y.size(0), "Batch size mismatch"
         
         if self.dataset == 'tuhz':
+            targets = data.y.type(torch.float32).reshape(-1, 1)
             loss = F.binary_cross_entropy_with_logits(out, targets)
             
             log_dict = {
