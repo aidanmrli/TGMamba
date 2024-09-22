@@ -20,7 +20,7 @@ from data.signal_processing import signal_processings
 
 # from constants import DODH_CHANNELS
 
-DODH_FILEMARKER_DIR = "data/file_markers_dodh"
+DODH_FILEMARKER_DIR = "/home/amli/TGMamba/data/file_markers_dodh"
 # Dreem DOD-H
 DODH_CHANNELS = [
     "C3_M2",
@@ -222,97 +222,121 @@ class ImbalancedDatasetSampler(torch.utils.data.sampler.Sampler):
     def __len__(self):
         return self.num_samples
 
-class DODHDataset(Dataset):
-    def __init__(
-        self,
-        root,
-        raw_data_path,
-        file_marker,
-        split,
-        dataset_name,
-        freq,
-        scaler=None,
-        transform=None,
-        pre_transform=None,
-    ):
-        self.root = root
-        self.raw_data_path = raw_data_path
-        self.file_marker = file_marker
-        self.split = split
-        self.seq_len = 30  # hard-coded
-        self.num_nodes = len(DODH_CHANNELS)
-        self.scaler = scaler
-        self.dataset_name = dataset_name
-        self.freq = freq
+# class DODHDataset(Dataset):
+#     def __init__(
+#         self,
+#         root,
+#         raw_data_path,
+#         file_marker,
+#         split,
+#         dataset_name,
+#         freq,
+#         scaler=None,
+#         transform=None,
+#         pre_transform=None,
+#     ):
+#         self.root = root
+#         self.raw_data_path = raw_data_path
+#         self.file_marker = file_marker
+#         self.split = split
+#         self.seq_len = 30  # hard-coded
+#         self.num_nodes = len(DODH_CHANNELS)
+#         self.scaler = scaler
+#         self.dataset_name = dataset_name
+#         self.freq = freq
 
-        self.df_file = file_marker
-        self.records = self.df_file["record_id"].tolist()
-        self.labels = self.df_file["label"].tolist()
-        self.clip_idxs = self.df_file["clip_index"].tolist()
+#         self.df_file = file_marker
+#         self.records = self.df_file["record_id"].tolist()
+#         self.labels = self.df_file["label"].tolist()
+#         self.clip_idxs = self.df_file["clip_index"].tolist()
 
-        # process
+#         # process
+#         super().__init__(root, transform, pre_transform)
+
+#     @property
+#     def raw_file_names(self):
+#         return [
+#             os.path.join(self.raw_data_path, fn)
+#             for fn in os.listdir(self.raw_data_path)
+#         ]
+
+#     def len(self):
+#         return len(self.df_file)
+
+#     def get_labels(self):
+#         return torch.FloatTensor(self.labels)
+
+#     def get(self, idx):
+
+#         h5_file_name = self.records[idx]
+#         y = self.labels[idx]
+#         clip_idx = int(self.df_file.iloc[idx]["clip_index"])
+
+#         writeout_fn = h5_file_name.split(".h5")[0] + "_" + str(clip_idx)
+
+#         # read data
+#         try:
+#             signals, channels, _ = read_dreem_data(self.raw_data_path, h5_file_name)
+#         except:
+#             with h5py.File(os.path.join(self.raw_data_path, h5_file_name), "r") as hf:
+#                 signals = hf["signals"][:]
+#                 signals = np.transpose(
+#                     signals, (1, 0)
+#                 )  # (total_seq_len*freq, num_channels)
+#                 channels = hf["channels"][:]
+#                 channels = [ch.decode("UTF-8") for ch in channels]
+#                 fs = hf["fs"][()]
+#                 assert self.freq == fs
+
+#         physical_len = int(self.freq * self.seq_len)
+#         start_idx = clip_idx * physical_len
+#         end_idx = start_idx + physical_len
+
+#         channel_idxs = reorder_channels(channels, self.dataset_name)
+
+#         x = signals[channel_idxs, start_idx:end_idx]
+#         signal_properties = {'fs': self.freq, 'padding': 0}  
+#         x = preprocess_signal(x, signal_properties)
+        
+#         x = torch.FloatTensor(x).unsqueeze(-1)  # (num_channels, seq_len*freq, 1)
+        
+#         # TODO: apply FFT
+#         # TODO: see Dreem-Learning-Open preprocessing code for how they did this
+#         y = torch.LongTensor([y])
+
+#         if self.scaler is not None:
+#             # standardize
+#             x = self.scaler.transform(x)
+
+#         # pyg graph
+#         data = Data(x=x.float(), y=y, writeout_fn=writeout_fn)
+
+#         return data
+class PreprocessedDODHDataset(Dataset):
+    def __init__(self, root, transform=None, pre_transform=None):
         super().__init__(root, transform, pre_transform)
+        self.root = root
+        self.labels = None
+        self.data_files = sorted([f for f in os.listdir(self.root) if f.startswith('data_')])
 
     @property
-    def raw_file_names(self):
-        return [
-            os.path.join(self.raw_data_path, fn)
-            for fn in os.listdir(self.raw_data_path)
-        ]
+    def processed_file_names(self):
+        return self.data_files
 
     def len(self):
-        return len(self.df_file)
-
-    def get_labels(self):
-        return torch.FloatTensor(self.labels)
+        return len(self.data_files)
 
     def get(self, idx):
-
-        h5_file_name = self.records[idx]
-        y = self.labels[idx]
-        clip_idx = int(self.df_file.iloc[idx]["clip_index"])
-
-        writeout_fn = h5_file_name.split(".h5")[0] + "_" + str(clip_idx)
-
-        # read data
-        try:
-            signals, channels, _ = read_dreem_data(self.raw_data_path, h5_file_name)
-        except:
-            with h5py.File(os.path.join(self.raw_data_path, h5_file_name), "r") as hf:
-                signals = hf["signals"][:]
-                signals = np.transpose(
-                    signals, (1, 0)
-                )  # (total_seq_len*freq, num_channels)
-                channels = hf["channels"][:]
-                channels = [ch.decode("UTF-8") for ch in channels]
-                fs = hf["fs"][()]
-                assert self.freq == fs
-
-        physical_len = int(self.freq * self.seq_len)
-        start_idx = clip_idx * physical_len
-        end_idx = start_idx + physical_len
-
-        channel_idxs = reorder_channels(channels, self.dataset_name)
-
-        x = signals[channel_idxs, start_idx:end_idx]
-        signal_properties = {'fs': self.freq, 'padding': 0}  
-        x = preprocess_signal(x, signal_properties)
-        
-        x = torch.FloatTensor(x).unsqueeze(-1)  # (num_channels, seq_len*freq, 1)
-        
-        # TODO: apply FFT
-        # TODO: see Dreem-Learning-Open preprocessing code for how they did this
-        y = torch.LongTensor([y])
-
-        if self.scaler is not None:
-            # standardize
-            x = self.scaler.transform(x)
-
-        # pyg graph
-        data = Data(x=x.float(), y=y, writeout_fn=writeout_fn)
-
+        data = torch.load(os.path.join(self.root, f'data_{idx}.pt'))
         return data
 
+    def get_labels(self):
+        if self.labels is None:
+            self.labels = []
+            for idx in range(self.len()):
+                data = self.get(idx)
+                self.labels.append(data.y.item())
+        return torch.FloatTensor(self.labels)
 
 class DODHDataModule(L.LightningDataModule):
     def __init__(
@@ -322,45 +346,100 @@ class DODHDataModule(L.LightningDataModule):
         test_batch_size,
         num_workers,
         pin_memory=True,
+        balanced_sampling=True,
+        use_class_weight=False,
     ):
         super().__init__()
         self.preprocessed_data_dir = preprocessed_data_dir
         self.train_batch_size = train_batch_size
         self.test_batch_size = test_batch_size
         self.num_workers = num_workers
+        self.balanced_sampling = balanced_sampling
+        self.use_class_weight = use_class_weight
         self.pin_memory = pin_memory
+        if use_class_weight and balanced_sampling:
+            raise ValueError(
+                "Choose only one of use_class_weight or balanced_sampling!"
+            )
+        self.train_dataset = None
+        self.val_dataset = None
+        self.test_dataset = None
+        self.class_weights = None
 
     def setup(self, stage=None):
         for split in ['train', 'val', 'test']:
-            dataset = Dataset(root=os.path.join(self.preprocessed_data_dir, f'preprocessed_dodh_{split}'))
+            dataset = PreprocessedDODHDataset(root=os.path.join(self.preprocessed_data_dir, f'preprocessed_dodh_{split}'))
             setattr(self, f"{split}_dataset", dataset)
+            
+        if self.use_class_weight:
+            self.class_weights = torch.FloatTensor(
+                [
+                    np.sum(self.train_dataset.labels == c) / len(self.train_dataset)
+                    for c in np.arange(5)
+                ]
+            )
+            self.class_weights /= torch.sum(self.class_weights)
+            print("Class weight:", self.class_weights)
+            
+    def prepare_data(self) -> None:
+        self.file_markers = {}
+        for split in ["train", "val", "test"]:
+            print("{}_file_markers.csv".format(split))
+            self.file_markers[split] = pd.read_csv(
+                os.path.join(
+                    DODH_FILEMARKER_DIR, "{}_file_markers.csv".format(split)
+                )
+            )   
 
     def train_dataloader(self):
-        return DataLoader(
-            self.train_dataset,
+        if self.balanced_sampling:
+            class_counts = list(
+                Counter(self.train_dataset.get_labels().cpu().numpy()).values()
+            )
+            min_samples = np.min(np.array(class_counts))
+            sampler = ImbalancedDatasetSampler(
+                dataset=self.train_dataset,
+                num_samples=min_samples * 5,
+                replacement=False,
+            )
+            shuffle = False
+        else:
+            sampler = None
+            shuffle = True
+
+        train_dataloader = DataLoader(
+            dataset=self.train_dataset,
+            sampler=sampler,
+            shuffle=shuffle,
             batch_size=self.train_batch_size,
-            shuffle=True,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
+            persistent_workers=True,
         )
+        return train_dataloader
 
     def val_dataloader(self):
-        return DataLoader(
-            self.val_dataset,
-            batch_size=self.test_batch_size,
+        val_dataloader = DataLoader(
+            dataset=self.val_dataset,
             shuffle=False,
+            batch_size=self.test_batch_size,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
+            persistent_workers=True,
         )
+        return val_dataloader
 
     def test_dataloader(self):
-        return DataLoader(
-            self.test_dataset,
-            batch_size=self.test_batch_size,
+
+        test_dataloader = DataLoader(
+            dataset=self.test_dataset,
             shuffle=False,
+            batch_size=self.test_batch_size,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
+            persistent_workers=True,
         )
+        return test_dataloader
 
 # class DODHDataModule(L.LightningDataModule):
 #     def __init__(
@@ -378,10 +457,10 @@ class DODHDataModule(L.LightningDataModule):
 #     ):
 #         super().__init__()
 
-#         if use_class_weight and balanced_sampling:
-#             raise ValueError(
-#                 "Choose only one of use_class_weight or balanced_sampling!"
-#             )
+        # if use_class_weight and balanced_sampling:
+        #     raise ValueError(
+        #         "Choose only one of use_class_weight or balanced_sampling!"
+        #     )
 
 #         self.raw_data_path = raw_data_path
 #         self.dataset_name = dataset_name
@@ -402,132 +481,132 @@ class DODHDataModule(L.LightningDataModule):
 #         self.scaler = None
 #         self.class_weights = None
         
-#     def prepare_data(self) -> None:
-#         self.file_markers = {}
-#         for split in ["train", "val", "test"]:
-#             if self.dataset_name == "dodh":
-#                 print("{}_file_markers.csv".format(split))
-#                 self.file_markers[split] = pd.read_csv(
-#                     os.path.join(
-#                         DODH_FILEMARKER_DIR, "{}_file_markers.csv".format(split)
-#                     )
-#                 )   
-#             else:
-#                 raise NotImplementedError()
+    # def prepare_data(self) -> None:
+    #     self.file_markers = {}
+    #     for split in ["train", "val", "test"]:
+    #         if self.dataset_name == "dodh":
+    #             print("{}_file_markers.csv".format(split))
+    #             self.file_markers[split] = pd.read_csv(
+    #                 os.path.join(
+    #                     DODH_FILEMARKER_DIR, "{}_file_markers.csv".format(split)
+    #                 )
+    #             )   
+    #         else:
+    #             raise NotImplementedError()
 
-#         if self.standardize:
-#             train_files = list(set(self.file_markers["train"]["record_id"].tolist()))
-#             # self.mean, self.std = self._compute_mean_std(
-#             #     train_files, num_nodes=self.num_nodes
-#             # )
-#             # print("mean:", self.mean.shape)
+    #     if self.standardize:
+    #         train_files = list(set(self.file_markers["train"]["record_id"].tolist()))
+    #         # self.mean, self.std = self._compute_mean_std(
+    #         #     train_files, num_nodes=self.num_nodes
+    #         # )
+    #         # print("mean:", self.mean.shape)
 
-#             # self.scaler = StandardScaler(mean=self.mean, std=self.std)
-#             self.scaler = None
-#         else:
-#             self.scaler = None
+    #         # self.scaler = StandardScaler(mean=self.mean, std=self.std)
+    #         self.scaler = None
+    #     else:
+    #         self.scaler = None
 
-#     def setup(self, stage=None):
-#         self.train_dataset = DODHDataset(
-#             root=None,
-#             raw_data_path=self.raw_data_path,
-#             file_marker=self.file_markers["train"],
-#             split="train",
-#             dataset_name=self.dataset_name,
-#             freq=self.freq, # 250
-#             scaler=self.scaler,
-#             transform=None,
-#             pre_transform=None,
-#         )
+    # def setup(self, stage=None):
+    #     self.train_dataset = DODHDataset(
+    #         root=None,
+    #         raw_data_path=self.raw_data_path,
+    #         file_marker=self.file_markers["train"],
+    #         split="train",
+    #         dataset_name=self.dataset_name,
+    #         freq=self.freq, # 250
+    #         scaler=self.scaler,
+    #         transform=None,
+    #         pre_transform=None,
+    #     )
 
-#         # compute class weights
-#         if self.use_class_weight:
-#             self.class_weights = torch.FloatTensor(
-#                 [
-#                     np.sum(self.train_dataset.labels == c) / len(self.train_dataset)
-#                     for c in np.arange(5)
-#                 ]
-#             )
-#             self.class_weights /= torch.sum(self.class_weights)
-#             print("Class weight:", self.class_weights)
-#         else:
-#             self.class_weights = None
+    #     # compute class weights
+    #     if self.use_class_weight:
+    #         self.class_weights = torch.FloatTensor(
+    #             [
+    #                 np.sum(self.train_dataset.labels == c) / len(self.train_dataset)
+    #                 for c in np.arange(5)
+    #             ]
+    #         )
+    #         self.class_weights /= torch.sum(self.class_weights)
+    #         print("Class weight:", self.class_weights)
+    #     else:
+    #         self.class_weights = None
 
-#         self.val_dataset = DODHDataset(
-#             root=None,
-#             raw_data_path=self.raw_data_path,
-#             file_marker=self.file_markers["val"],
-#             split="val",
-#             dataset_name=self.dataset_name,
-#             freq=self.freq,
-#             scaler=self.scaler,
-#             transform=None,
-#             pre_transform=None,
-#         )
+    #     self.val_dataset = DODHDataset(
+    #         root=None,
+    #         raw_data_path=self.raw_data_path,
+    #         file_marker=self.file_markers["val"],
+    #         split="val",
+    #         dataset_name=self.dataset_name,
+    #         freq=self.freq,
+    #         scaler=self.scaler,
+    #         transform=None,
+    #         pre_transform=None,
+    #     )
 
-#         self.test_dataset = DODHDataset(
-#             root=None,
-#             raw_data_path=self.raw_data_path,
-#             file_marker=self.file_markers["test"],
-#             split="test",
-#             dataset_name=self.dataset_name,
-#             freq=self.freq,
-#             scaler=self.scaler,
-#             transform=None,
-#             pre_transform=None,
-#         )
+    #     self.test_dataset = DODHDataset(
+    #         root=None,
+    #         raw_data_path=self.raw_data_path,
+    #         file_marker=self.file_markers["test"],
+    #         split="test",
+    #         dataset_name=self.dataset_name,
+    #         freq=self.freq,
+    #         scaler=self.scaler,
+    #         transform=None,
+    #         pre_transform=None,
+    #     )
 
-#     def train_dataloader(self):
+    # def train_dataloader(self):
 
-#         if self.balanced_sampling:
-#             class_counts = list(
-#                 Counter(self.train_dataset.get_labels().cpu().numpy()).values()
-#             )
-#             min_samples = np.min(np.array(class_counts))
-#             sampler = ImbalancedDatasetSampler(
-#                 dataset=self.train_dataset,
-#                 num_samples=min_samples * 5,
-#                 replacement=False,
-#             )
-#             shuffle = False
-#         else:
-#             sampler = None
-#             shuffle = True
+    #     if self.balanced_sampling:
+    #         class_counts = list(
+    #             Counter(self.train_dataset.get_labels().cpu().numpy()).values()
+    #         )
+    #         min_samples = np.min(np.array(class_counts))
+    #         sampler = ImbalancedDatasetSampler(
+    #             dataset=self.train_dataset,
+    #             num_samples=min_samples * 5,
+    #             replacement=False,
+    #         )
+    #         shuffle = False
+    #     else:
+    #         sampler = None
+    #         shuffle = True
 
-#         train_dataloader = DataLoader(
-#             dataset=self.train_dataset,
-#             sampler=sampler,
-#             shuffle=shuffle,
-#             batch_size=self.train_batch_size,
-#             num_workers=self.num_workers,
-#             pin_memory=self.pin_memory,
-#             persistent_workers=True,
-#         )
-#         return train_dataloader
+    #     train_dataloader = DataLoader(
+    #         dataset=self.train_dataset,
+    #         sampler=sampler,
+    #         shuffle=shuffle,
+    #         batch_size=self.train_batch_size,
+    #         num_workers=self.num_workers,
+    #         pin_memory=self.pin_memory,
+    #         persistent_workers=True,
+    #     )
+    #     return train_dataloader
 
-#     def val_dataloader(self):
+    # def val_dataloader(self):
 
-#         val_dataloader = DataLoader(
-#             dataset=self.val_dataset,
-#             shuffle=False,
-#             batch_size=self.test_batch_size,
-#             num_workers=self.num_workers,
-#             pin_memory=self.pin_memory,
-#             persistent_workers=True,
-#         )
-#         return val_dataloader
+    #     val_dataloader = DataLoader(
+    #         dataset=self.val_dataset,
+    #         shuffle=False,
+    #         batch_size=self.test_batch_size,
+    #         num_workers=self.num_workers,
+    #         pin_memory=self.pin_memory,
+    #         persistent_workers=True,
+    #     )
+    #     return val_dataloader
 
-#     def test_dataloader(self):
+    # def test_dataloader(self):
 
-#         test_dataloader = DataLoader(
-#             dataset=self.test_dataset,
-#             shuffle=False,
-#             batch_size=self.test_batch_size,
-#             num_workers=self.num_workers,
-#             pin_memory=self.pin_memory,
-#             persistent_workers=True,
-#         )
-#         return test_dataloader
+    #     test_dataloader = DataLoader(
+    #         dataset=self.test_dataset,
+    #         shuffle=False,
+    #         batch_size=self.test_batch_size,
+    #         num_workers=self.num_workers,
+    #         pin_memory=self.pin_memory,
+    #         persistent_workers=True,
+    #     )
+    #     return test_dataloader
 
 #     def _compute_mean_std(self, train_files, num_nodes):
 #         count = 0

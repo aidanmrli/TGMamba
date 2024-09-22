@@ -6,7 +6,7 @@ import torch.optim as optim
 from mamba_ssm import TGMamba
 from torchmetrics import Accuracy, F1Score, AUROC, CohenKappa
 from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, CosineAnnealingWarmRestarts, SequentialLR
-
+from sklearn.metrics import cohen_kappa_score
 
 class LightGTMamba(L.LightningModule):
     def __init__(self, 
@@ -83,11 +83,20 @@ class LightGTMamba(L.LightningModule):
 
         Output: torch.Tensor of shape (B, 1) representing predictions
         """
-        # Normalize input data
         # print("data.x.size(): ", data.x.size())
-        batch, seqlen, _ = data.x.size()
         num_vertices = self.num_vertices
-        batch = batch // num_vertices
+        batch, seqlen = None, None
+        if self.dataset == 'tuhz':
+            batch, seqlen, _ = data.x.size()
+            batch = batch // num_vertices
+        elif self.dataset == 'dodh':
+            # currently torch.Size([256, 16, 129, 31])
+            batch = data.x.size(0)
+            seqlen = data.x.size(-1)
+            dim = data.x.size(-2)
+            data.x = data.x.permute(0, 1, 3, 2).contiguous().view(-1, 31, 129)
+            # want to reshape to torch.Size([256 * 16, 31, 129])
+
         out = self.in_proj(data.x)  # (B*V, L, d_model)
         assert not torch.isnan(out).any(), "NaN in input data"
         # out = data.x
@@ -122,7 +131,7 @@ class LightGTMamba(L.LightningModule):
         else:
             raise ValueError("Invalid vertex pooling type")
 
-        out = self.fc(out)  # (B, 1)
+        out = self.classifier(out)  # (B, 1)
         return out
 
     def training_step(self, data, batch_idx):
@@ -144,18 +153,19 @@ class LightGTMamba(L.LightningModule):
                 "train/auroc": auroc,
             }
         elif self.dataset == 'dodh':
-            print("out.size(): ", out.size())
-            print("targets.size(): ", targets.size())
+            targets = data.y
             loss = F.cross_entropy(out, targets)
             probs = torch.softmax(out, dim=-1)
             preds = torch.argmax(probs, dim=-1)
             macro_f1 = self.macro_f1(preds, targets)
-            cohen_kappa = self.cohen_kappa(preds, targets)
+            cohen_kappa_torchmetrics = self.cohen_kappa(preds, targets)
+            cohen_kappa_sklearn = cohen_kappa_score(preds.cpu().numpy(), targets.cpu().numpy())
 
             log_dict = {
                 "train/loss": loss,
                 "train/macro_f1": macro_f1,
-                "train/cohen_kappa": cohen_kappa,
+                "train/cohen_kappa_torchmetrics": cohen_kappa_torchmetrics,
+                "train/cohen_kappa_sklearn": cohen_kappa_sklearn,
             }
         else:
             raise NotImplementedError
@@ -184,18 +194,23 @@ class LightGTMamba(L.LightningModule):
                 "val/auroc": auroc,
             }
         elif self.dataset == 'dodh':
-            print("out.size(): ", out.size())
-            print("targets.size(): ", targets.size())
+            targets = data.y
             loss = F.cross_entropy(out, targets)
             probs = torch.softmax(out, dim=-1)
             preds = torch.argmax(probs, dim=-1)
+            # print("Unique predicted classes:", torch.unique(preds))
+            # print("Unique true classes:", torch.unique(targets))
+            # print("Predicted class counts:", torch.bincount(preds))
+            # print("True class counts:", torch.bincount(targets))
             macro_f1 = self.macro_f1(preds, targets)
-            cohen_kappa = self.cohen_kappa(preds, targets)
+            cohen_kappa_torchmetrics = self.cohen_kappa(preds, targets)
+            cohen_kappa_sklearn = cohen_kappa_score(preds.cpu().numpy(), targets.cpu().numpy())
 
             log_dict = {
                 "val/loss": loss,
                 "val/macro_f1": macro_f1,
-                "val/cohen_kappa": cohen_kappa,
+                "val/cohen_kappa_torchmetrics": cohen_kappa_torchmetrics,
+                "val/cohen_kappa_sklearn": cohen_kappa_sklearn,
             }
         else:
             raise NotImplementedError
@@ -223,8 +238,7 @@ class LightGTMamba(L.LightningModule):
                 "test/auroc": auroc,
             }
         elif self.dataset == 'dodh':
-            print("out.size(): ", out.size())
-            print("targets.size(): ", targets.size())
+            targets = data.y
             loss = F.cross_entropy(out, targets)
             probs = torch.softmax(out, dim=-1)
             preds = torch.argmax(probs, dim=-1)

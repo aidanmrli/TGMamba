@@ -12,6 +12,7 @@ from pytorch_lightning.loggers import WandbLogger
 from data import DODHDataModule, TUHZDataModule
 
 DODH_RAW_DATA_DIR='/home/amli/dreem-learning-open/data/h5/dodh'
+DODH_PROCESSED_DATA_DIR='/home/amli/TGMamba/data/'
 
 
 def main(args):
@@ -29,18 +30,17 @@ def main(args):
     stopping_callback_metric = ""
     if args.dataset == 'dodh':
         datamodule = DODHDataModule(
-                raw_data_path=DODH_RAW_DATA_DIR, 
-                dataset_name="dodh",  # should be 'dodh'
-                freq=250,    # args.sampling_freq = 250 Hz or if we make it lower then we can make the seq shorter
+                preprocessed_data_dir=DODH_PROCESSED_DATA_DIR, 
                 train_batch_size=args.train_batch_size,
                 test_batch_size=args.test_batch_size,
                 num_workers=args.num_workers,
-                standardize=True,
-                balanced_sampling=True,  # True
+                balanced_sampling=True,  # default True
+                use_class_weight=False,  # default False
                 pin_memory=True,
             )
         stopping_callback_metric = "val/macro_f1"
         project_name_suffix = "_dodh"
+        input_dim = 129 # if args.dataset_has_fft else 1
     elif args.dataset == 'tuhz':
         datamodule = TUHZDataModule(
             data_dir=data_dir,
@@ -49,16 +49,17 @@ def main(args):
             dataset_has_fft=args.dataset_has_fft,
         )
         stopping_callback_metric = "val/auroc"
+        input_dim = 100 # if args.dataset_has_fft else 1
     # Prepare the data
     datamodule.prepare_data()
     datamodule.setup()
     print("Model parameters: ", args.state_expansion_factor, args.seq_pool_type, args.vertex_pool_type, args.conv_type, args.model_dim, args.local_conv_width, args.num_tgmamba_layers)
-    
+    # print("Input dim: ", input_dim)
     model = LightGTMamba(dataset=args.dataset, 
                          conv_type=args.conv_type.lower(), 
                          seq_pool_type=args.seq_pool_type, 
                          vertex_pool_type=args.vertex_pool_type,
-                         input_dim=datamodule.train_dataset[0].x.shape[-1], 
+                         input_dim=input_dim, 
                          d_model=args.model_dim, 
                          d_state=args.state_expansion_factor, 
                          d_conv=args.local_conv_width,
@@ -123,12 +124,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="TGMamba Training Script")
     parser.add_argument('--rand_seed', type=int, default=42)
     parser.add_argument('--save_dir', type=str, default='TGMamba/results')
-    parser.add_argument('--dataset', type=str, default='tuhz')
+    parser.add_argument('--dataset', type=str, default='dodh')
     parser.add_argument('--dataset_has_fft', action='store_true', help="Enable FFT-processed data in the model")
     parser.add_argument('--conv_type', type=str, default='graphconv')
     parser.add_argument('--seq_pool_type', type=str, default='mean')
     parser.add_argument('--vertex_pool_type', type=str, default='max')
-    parser.add_argument('--model_dim', type=int, default=1)
+    parser.add_argument('--model_dim', type=int, default=32)
     parser.add_argument('--state_expansion_factor', type=int, default=32)
     parser.add_argument('--local_conv_width', type=int, default=4)
     parser.add_argument('--num_tgmamba_layers', type=int, default=2)
