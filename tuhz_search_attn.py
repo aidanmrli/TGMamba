@@ -10,7 +10,7 @@ from optuna.visualization import plot_param_importances
 from lightning.pytorch.callbacks import EarlyStopping
 from lightning.pytorch.strategies import DDPStrategy
 from lightning.pytorch.loggers import WandbLogger
-from torch_geometric.loader import DataLoader
+from data import TUHZDataModule
 import joblib
 import wandb
 
@@ -24,34 +24,34 @@ def load_data(data_dir):
 
     return train_dataset, val_dataset
 
-def objective(trial, args, train_dataloader, val_dataloader):
+def objective(trial, args, datamodule):
     # Suggest hyperparameters
     trial_params = {
         'num_tgmamba_layers': trial.suggest_int('num_tgmamba_layers', 1, 5),
         'model_dim': trial.suggest_categorical('model_dim', [16, 32, 50]),
         'state_expansion_factor': trial.suggest_categorical('state_expansion_factor', [16, 32, 48, 64, 128]),
-        'conv_type': trial.suggest_categorical('conv_type', ['gcnconv', 'graphconv', 'chebconv', 'gatv2conv']),
-        'optimizer_name': trial.suggest_categorical('optimizer_name', ['adam', 'adamw']),
+        # 'conv_type': trial.suggest_categorical('conv_type', ['gcnconv', 'graphconv', 'chebconv', 'gatv2conv']),
+        # 'optimizer_name': trial.suggest_categorical('optimizer_name', ['adam', 'adamw']),
         'lr_init': trial.suggest_float('lr_init', 1e-5, 1e-2, log=True),
         'weight_decay': trial.suggest_float('weight_decay', 0.01, 0.5, log=True),
-        'edge_learner_attention': trial.suggest_categorical('edge_learner_attention', [True, False]),
+        # 'edge_learner_attention': trial.suggest_categorical('edge_learner_attention', [True, False]),
         'attn_threshold': trial.suggest_float('attn_threshold', 0.03, 0.25),
         'attn_softmax_temp': trial.suggest_float('attn_softmax_temp', 0.001, 1.0, log=True),
         'seq_pool_type': trial.suggest_categorical('seq_pool_type', ['last', 'mean', 'max']),
         'vertex_pool_type': trial.suggest_categorical('vertex_pool_type', ['mean', 'max']),
-        'edge_learner_time_varying': trial.suggest_categorical('edge_learner_time_varying', [True, False]),
+        # 'edge_learner_time_varying': trial.suggest_categorical('edge_learner_time_varying', [True, False]),
     }
     
     # Initialize WandbLogger
-    with wandb.init(project="tuhz-edge-attention", name=f"trial_{trial.number}", config=trial_params, reinit=True) as run:
+    with wandb.init(project="tuhz-edge-attn-res-connection-then-linear", name=f"vector_trial_{trial.number}", config=trial_params, reinit=True) as run:
         # Initialize WandbLogger with the current run
         wandb_logger = WandbLogger(experiment=run)    
         # first_batch = next(iter(train_dataloader))
         try:
             # Create model
             model = LightGTMamba(
-                num_vertices=19,
-                conv_type=trial_params['conv_type'],
+                dataset='tuhz',
+                conv_type='graphconv',
                 seq_pool_type=trial_params['seq_pool_type'],
                 vertex_pool_type=trial_params['vertex_pool_type'],
                 input_dim=100,
@@ -59,15 +59,16 @@ def objective(trial, args, train_dataloader, val_dataloader):
                 d_state=trial_params['state_expansion_factor'],
                 d_conv=4,
                 num_tgmamba_layers=trial_params['num_tgmamba_layers'],
-                optimizer_name=trial_params['optimizer_name'],
+                optimizer_name='adamw', # haven't tried this yet,
                 lr=trial_params['lr_init'],
                 weight_decay=trial_params['weight_decay'],
                 rmsnorm=True,
                 edge_learner_attention=True,
                 edge_learner_layers=1,
+                edge_learner_time_varying=True,
+                attn_time_varying=False,
                 attn_softmax_temp=trial_params['attn_softmax_temp'],
                 attn_threshold=trial_params['attn_threshold'],
-                edge_learner_time_varying=trial_params['edge_learner_time_varying'],
             )
 
             # Early stopping callback
@@ -98,7 +99,7 @@ def objective(trial, args, train_dataloader, val_dataloader):
             # Train the model
             trainer.logger.log_hyperparams(trial_params)
 
-            trainer.fit(model, train_dataloader, val_dataloader)
+            trainer.fit(model, datamodule=datamodule)
             pruning_callback.check_pruned()
 
             # Get the best validation AUROC
@@ -125,17 +126,22 @@ def main(args):
 
     # Load data
     data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'processed_dataset')
-    train_dataset, val_dataset = load_data(data_dir)
-    train_dataloader = DataLoader(train_dataset, batch_size=args.train_batch_size, num_workers=args.num_workers)
-    val_dataloader = DataLoader(val_dataset, batch_size=args.test_batch_size, num_workers=args.num_workers)
-
+    datamodule = TUHZDataModule(
+            data_dir=data_dir,
+            batch_size=args.train_batch_size,
+            num_workers=args.num_workers,
+            dataset_has_fft=True,
+        )
+    stopping_callback_metric = "val/auroc"
+    datamodule.prepare_data()
+    datamodule.setup()
     # Create and run Optuna study
     wandb_kwargs = {"project": "tuhz-edge-attention"}
     # wandbc = WeightsAndBiasesCallback(metric_name="val/auroc", wandb_kwargs=wandb_kwargs)
     study = joblib.load("tuhz_study_attn.pkl")
     # study = optuna.create_study(direction='maximize', pruner=optuna.pruners.HyperbandPruner())
     joblib.dump(study, "tuhz_study_attn.pkl")
-    study.optimize(lambda trial: objective(trial, args, train_dataloader, val_dataloader), 
+    study.optimize(lambda trial: objective(trial, args, datamodule), 
                    n_trials=args.n_trials, 
                    n_jobs=1,
                    gc_after_trial=True
@@ -158,7 +164,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="TUHZ Hyperparameter Search (no attention)")
     parser.add_argument('--rand_seed', type=int, default=42)
     parser.add_argument('--save_dir', type=str, default='optuna_results/tuhz')
-    parser.add_argument('--num_vertices', type=int, default=19)
     parser.add_argument('--train_batch_size', type=int, default=64)
     parser.add_argument('--test_batch_size', type=int, default=64)
     parser.add_argument('--num_workers', type=int, default=12)

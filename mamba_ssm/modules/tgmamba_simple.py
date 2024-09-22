@@ -40,7 +40,6 @@ class TGMamba(nn.Module):
         d_conv=4,   # width of local 1D causal convolution
         expand=2,   # block expansion factor to get the number of channels D
         num_vertices=19,  # New parameter for number of EEG channels
-        num_edges=72,   # New parameter for number of edges
         dt_rank="auto",
         dt_min=0.001,
         dt_max=0.1,
@@ -57,8 +56,9 @@ class TGMamba(nn.Module):
         rmsnorm=True,
         edge_learner_layers=1,
         edge_learner_attention=True,
-        attn_threshold=0.1,
         edge_learner_time_varying=True,
+        attn_time_varying=False,
+        attn_threshold=0.1,
         attn_softmax_temp=0.01,
     ):
         factory_kwargs = {"device": device, "dtype": dtype}
@@ -77,11 +77,11 @@ class TGMamba(nn.Module):
         self.num_vertices = num_vertices  # Store number of vertices (EEG channels)
         self.edge_learner = EdgeLearner(d_model, 
                                         num_vertices, 
-                                        num_edges, 
                                         edge_learner_layers, 
                                         use_attention=edge_learner_attention,
+                                        edge_learner_time_varying=edge_learner_time_varying,
+                                        attn_time_varying=attn_time_varying,
                                         attention_threshold=attn_threshold,
-                                        time_varying=edge_learner_time_varying,
                                         temperature=attn_softmax_temp)
         if edge_learner_time_varying and edge_learner_attention:
             self.time_varying_attention = True

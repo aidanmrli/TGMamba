@@ -6,7 +6,6 @@ import torch.optim as optim
 from mamba_ssm import TGMamba
 from torchmetrics import Accuracy, F1Score, AUROC, CohenKappa
 from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, CosineAnnealingWarmRestarts, SequentialLR
-from sklearn.metrics import cohen_kappa_score
 
 class LightGTMamba(L.LightningModule):
     def __init__(self, 
@@ -26,6 +25,7 @@ class LightGTMamba(L.LightningModule):
                  edge_learner_layers=1,
                  edge_learner_attention=True,
                  edge_learner_time_varying=True,
+                 attn_time_varying=False,
                  attn_threshold=0.1,
                  attn_softmax_temp=0.01,
                  pass_edges_to_next_layer=False,
@@ -69,7 +69,8 @@ class LightGTMamba(L.LightningModule):
                 rmsnorm=self.rmsnorm,
                 edge_learner_layers=edge_learner_layers,
                 edge_learner_attention=edge_learner_attention,
-                edge_learner_time_varying=edge_learner_time_varying,
+                edge_learner_time_varying=edge_learner_time_varying, # True
+                attn_time_varying=attn_time_varying, # False
                 attn_threshold=attn_threshold,
                 attn_softmax_temp=attn_softmax_temp,
             ) for _ in range(num_tgmamba_layers)

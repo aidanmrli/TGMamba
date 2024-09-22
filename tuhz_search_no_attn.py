@@ -31,9 +31,9 @@ def objective(trial, args, train_dataloader, val_dataloader):
         'num_tgmamba_layers': trial.suggest_int('num_tgmamba_layers', 1, 4),
         'model_dim': trial.suggest_categorical('model_dim', [16, 32, 50]),
         'state_expansion_factor': trial.suggest_categorical('state_expansion_factor', [16, 32, 48, 64, 128]),
-        'conv_type': trial.suggest_categorical('conv_type', ['gcnconv', 'graphconv', 'chebconv', 'gatv2conv']),
-        'optimizer_name': trial.suggest_categorical('optimizer_name', ['adam', 'adamw']),
-        'lr_init': trial.suggest_float('lr_init', 1e-5, 1e-2, log=True),
+        # 'conv_type': trial.suggest_categorical('conv_type', ['gcnconv', 'graphconv', 'chebconv', 'gatv2conv']),
+        # 'optimizer_name': trial.suggest_categorical('optimizer_name', ['adam', 'adamw']),
+        'lr_init': trial.suggest_float('lr_init', 1e-5, 2e-3, log=True),
         'weight_decay': trial.suggest_float('weight_decay', 0.01, 0.5, log=True),
         'seq_pool_type': trial.suggest_categorical('seq_pool_type', ['last', 'mean', 'max']),
         'vertex_pool_type': trial.suggest_categorical('vertex_pool_type', ['mean', 'max']),
@@ -41,7 +41,7 @@ def objective(trial, args, train_dataloader, val_dataloader):
     }
     
     # Initialize WandbLogger
-    with wandb.init(project="tuhz-no-edge-attention", name=f"trial_{trial.number}", config=trial_params, reinit=True) as run:
+    with wandb.init(project="tuhz-no-edge-attention", name=f"no-warmup_trial_{trial.number}", config=trial_params, reinit=True) as run:
         # Initialize WandbLogger with the current run
         wandb_logger = WandbLogger(experiment=run)    
         # first_batch = next(iter(train_dataloader))
@@ -49,7 +49,7 @@ def objective(trial, args, train_dataloader, val_dataloader):
             # Create model
             model = LightGTMamba(
                 num_vertices=19,
-                conv_type=trial_params['conv_type'],
+                conv_type='graphconv',
                 seq_pool_type=trial_params['seq_pool_type'],
                 vertex_pool_type=trial_params['vertex_pool_type'],
                 input_dim=100,
@@ -57,7 +57,7 @@ def objective(trial, args, train_dataloader, val_dataloader):
                 d_state=trial_params['state_expansion_factor'],
                 d_conv=4,
                 num_tgmamba_layers=trial_params['num_tgmamba_layers'],
-                optimizer_name=trial_params['optimizer_name'],
+                optimizer_name='adamw',
                 lr=trial_params['lr_init'],
                 weight_decay=trial_params['weight_decay'],
                 rmsnorm=True,

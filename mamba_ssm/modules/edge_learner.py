@@ -10,16 +10,22 @@ from einops import rearrange, repeat
 # use torch geometric 2.3.0 versions
 from torch_geometric.utils import remove_self_loops, add_self_loops, to_dense_adj
 
-
 class EdgeLearner(nn.Module):
-    def __init__(self, d_model, num_vertices, num_edges, num_layers=1, use_attention=True, attention_threshold=0.1, time_varying=True, temperature=0.01):
+    def __init__(self, d_model, 
+                 num_vertices, 
+                 num_linear_layers=1, 
+                 use_attention=True,
+                 edge_learner_time_varying=True,
+                 attn_time_varying=False,
+                 attention_threshold=0.1, 
+                 temperature=0.01):
         super().__init__()
         self.d_model = d_model
         self.num_vertices = num_vertices
-        self.num_edges = num_edges
         self.use_attention = use_attention
-        self.time_varying = time_varying
-        self.num_layers = num_layers
+        self.edge_learner_time_varying = edge_learner_time_varying
+        self.attn_time_varying = attn_time_varying
+        self.num_linear_layers = num_linear_layers
         self.act = nn.SiLU()
 
         if use_attention:
@@ -30,19 +36,19 @@ class EdgeLearner(nn.Module):
             self.attn_scale = torch.sqrt(torch.tensor(d_model, dtype=torch.float))
             self.softmax_temperature = temperature
 
-        else:
-            if num_layers == 1:
-                self.edge_transform = nn.Linear(num_edges, num_edges)
+        if edge_learner_time_varying and not attn_time_varying:
+            if num_linear_layers == 1:
+                self.edge_transform = nn.Linear(1, 1)
             else:
                 layers = []
-                for i in range(num_layers):
+                for i in range(num_linear_layers):
                     if i == 0:
-                        layers.append(nn.Linear(num_edges, num_edges * 2))
-                    elif i == num_layers - 1:
-                        layers.append(nn.Linear(num_edges * 2, num_edges))
+                        layers.append(nn.Linear(1, 8))
+                    elif i == num_linear_layers - 1:
+                        layers.append(nn.Linear(8, 1))
                     else:
-                        layers.append(nn.Linear(num_edges * 2, num_edges * 2))
-                    if i < num_layers - 1:
+                        layers.append(nn.Linear(8, 8))
+                    if i < num_linear_layers - 1:
                         layers.append(self.act)
                 self.edge_transform = nn.Sequential(*layers)
             self.skip_param = nn.Parameter(torch.tensor(0.9))   # if 1.0, use original edge weights, if 0.0, use learned edge weights
@@ -63,8 +69,6 @@ class EdgeLearner(nn.Module):
         if edge_weight is not None and edge_weight.dim() < 2: # should always be true
             batch = torch.arange(batch_size, device=edge_index.device).repeat_interleave(self.num_vertices)
             batch_adj_mat = to_dense_adj(edge_index, batch=batch, edge_attr=edge_weight, max_num_nodes=self.num_vertices, batch_size=batch_size)
-            # print("batch_adj_mat.size(): ", batch_adj_mat.size())
-            # print("batch_adj_mat: ", batch_adj_mat[1, :10, :10])
             assert batch_adj_mat.size() == (batch_size, self.num_vertices, self.num_vertices), "Batch adjacency matrix size mismatch"
             edge_index = repeat(edge_index, 'c b -> c b l', c=2, l=seq_len)
             edge_weight = repeat(edge_weight, 'b -> b l', l=seq_len)
@@ -78,12 +82,12 @@ class EdgeLearner(nn.Module):
             if batch_adj_mat is not None and batch_adj_mat.dim() == 2:
                 batch_adj_mat = batch_adj_mat.unsqueeze(0).expand(batch_size, self.num_vertices, self.num_vertices).contiguous()
            
-            if self.time_varying:
+            if self.attn_time_varying:
                 Q = self.Q_proj(hidden_states)  # (batch_size, num_vertices, seq_len, d_model)
                 K = self.K_proj(hidden_states)  # (batch_size, num_vertices, seq_len, d_model)
                 attention_scores = torch.einsum('bvld,bwld->bvwl', Q, K) / self.attn_scale
-                attention_scores = F.softmax(attention_scores / self.softmax_temperature, dim=-2)  # (batch_size, num_vertices, num_vertices, seq_len
-                attention_scores = F.softmax(attention_scores / self.softmax_temperature, dim=-3)  # (batch_size, num_vertices, num_vertices, seq_len)              
+                attention_scores = F.softmax(attention_scores / self.softmax_temperature, dim=-2)  # (batch_size, num_vertices, num_vertices, seq_len)
+                # attention_scores = F.softmax(attention_scores / self.softmax_temperature, dim=-3)  # (batch_size, num_vertices, num_vertices, seq_len)              
 
                 # make the attention scores symmetric for the undirected graph
                 attention_scores = (attention_scores + attention_scores.transpose(1, 2)) / 2
@@ -167,20 +171,21 @@ class EdgeLearner(nn.Module):
                     edge_index=edge_index,
                     edge_attr=edge_weight,
                     fill_value=1,
-                )
-                # print("edge_index: ", edge_index.size())
-                # print("edge_weight: ", edge_weight.size())
-            # use the attention scores as the edge indices and weights
+                )   # edge_index is now (2, batch_size * num_edges), edge_weight is now (batch_size * num_edges)
+                edge_index = repeat(edge_index, 'c b -> c b l', c=2, l=seq_len)
+                edge_weight = repeat(edge_weight, 'b -> b l', l=seq_len)
+                
+                # edge_index should now have shape (2, batch_size * num_edges, seq_len)
+                # edge_weight should now have shape (batch_size * num_edges, seq_len)
 
-        else:
+        if self.edge_learner_time_varying or not self.use_attention:
+            edge_weight = edge_weight.unsqueeze(-1)  # Add dimension for linear transform
+            dynamic_edge_weight = self.edge_transform(edge_weight)
+            dynamic_edge_weight = torch.sigmoid(dynamic_edge_weight)
+            edge_weight = self.skip_param * edge_weight + (1 - self.skip_param) * dynamic_edge_weight
+            edge_weight = edge_weight.squeeze(-1)  # Remove added dimension
             # edge_index should now have shape (2, batch_size * num_edges, seq_len)
             # edge_weight should now have shape (batch_size * num_edges, seq_len)
-            # Simple linear transformation of edge weights
-            edge_weight = rearrange(edge_weight, '(b e) l -> (b l) e', b=batch_size, e=self.num_edges, l=seq_len)
-            dynamic_edge_weight = self.edge_transform(edge_weight)
-            dynamic_edge_weight = torch.sigmoid(dynamic_edge_weight) # (batch_size * seq_len, num_edges)
-            edge_weight = self.skip_param * edge_weight + (1 - self.skip_param) * dynamic_edge_weight   # (batch_size * seq_len, num_edges)
-            edge_weight = rearrange(edge_weight, '(b l) e -> (b e) l', b=batch_size, e=self.num_edges, l=seq_len)
 
         if edge_weight.dim() < 2:
             edge_index = repeat(edge_index, 'c b -> c b l', c=2, l=seq_len)
