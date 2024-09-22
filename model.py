@@ -6,7 +6,7 @@ import torch.optim as optim
 from mamba_ssm import TGMamba
 from torchmetrics import Accuracy, F1Score, AUROC, CohenKappa
 from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, CosineAnnealingWarmRestarts, SequentialLR
-from sklearn.metrics import cohen_kappa_score
+
 
 class LightGTMamba(L.LightningModule):
     def __init__(self, 
@@ -76,6 +76,13 @@ class LightGTMamba(L.LightningModule):
         ])
         self.classifier = torch.nn.Linear(d_model, num_classes) # num_classes = 1 for tuhz or 5 for dodh
 
+        # Accumulate validation and test predictions and targets for computing metrics
+        self.val_preds = []
+        self.val_probs = []
+        self.val_targets = []
+        self.test_preds = []
+        self.test_probs = []
+        self.test_targets = []
 
     def forward(self, data: Data):
         """
@@ -139,33 +146,17 @@ class LightGTMamba(L.LightningModule):
         assert out.size(0) == data.y.size(0), "Batch size mismatch"
         
         if self.dataset == 'tuhz':
-            probs = torch.sigmoid(out)
-            preds = (probs > 0.5).type(torch.float32)
-            targets = data.y.type(torch.float32).reshape(-1, 1)
             loss = F.binary_cross_entropy_with_logits(out, targets)
-            accuracy = self.accuracy(preds, targets)
-            f1 = self.f1(preds, targets)
-            auroc = self.auroc(probs, targets)
+            
             log_dict = {
                 "train/loss": loss,
-                "train/accuracy": accuracy,
-                "train/f1": f1,
-                "train/auroc": auroc,
             }
         elif self.dataset == 'dodh':
             targets = data.y
             loss = F.cross_entropy(out, targets)
-            probs = torch.softmax(out, dim=-1)
-            preds = torch.argmax(probs, dim=-1)
-            macro_f1 = self.macro_f1(preds, targets)
-            cohen_kappa_torchmetrics = self.cohen_kappa(preds, targets)
-            cohen_kappa_sklearn = cohen_kappa_score(preds.cpu().numpy(), targets.cpu().numpy())
 
             log_dict = {
                 "train/loss": loss,
-                "train/macro_f1": macro_f1,
-                "train/cohen_kappa_torchmetrics": cohen_kappa_torchmetrics,
-                "train/cohen_kappa_sklearn": cohen_kappa_sklearn,
             }
         else:
             raise NotImplementedError
@@ -184,14 +175,12 @@ class LightGTMamba(L.LightningModule):
             preds = (probs > 0.5).type(torch.float32)
             targets = data.y.type(torch.float32).reshape(-1, 1)
             loss = F.binary_cross_entropy_with_logits(out, targets)
-            accuracy = self.accuracy(preds, targets)
-            f1 = self.f1(preds, targets)
-            auroc = self.auroc(probs, targets)
+            self.val_preds.append(preds)
+            self.val_probs.append(probs)
+            self.val_targets.append(targets)
+            
             log_dict = {
                 "val/loss": loss,
-                "val/accuracy": accuracy,
-                "val/f1": f1,
-                "val/auroc": auroc,
             }
         elif self.dataset == 'dodh':
             targets = data.y
@@ -202,15 +191,11 @@ class LightGTMamba(L.LightningModule):
             # print("Unique true classes:", torch.unique(targets))
             # print("Predicted class counts:", torch.bincount(preds))
             # print("True class counts:", torch.bincount(targets))
-            macro_f1 = self.macro_f1(preds, targets)
-            cohen_kappa_torchmetrics = self.cohen_kappa(preds, targets)
-            cohen_kappa_sklearn = cohen_kappa_score(preds.cpu().numpy(), targets.cpu().numpy())
+            self.val_preds.append(preds)
+            self.val_targets.append(targets)
 
             log_dict = {
                 "val/loss": loss,
-                "val/macro_f1": macro_f1,
-                "val/cohen_kappa_torchmetrics": cohen_kappa_torchmetrics,
-                "val/cohen_kappa_sklearn": cohen_kappa_sklearn,
             }
         else:
             raise NotImplementedError
@@ -228,27 +213,23 @@ class LightGTMamba(L.LightningModule):
             preds = (probs > 0.5).type(torch.float32)
             targets = data.y.type(torch.float32).reshape(-1, 1)
             loss = F.binary_cross_entropy_with_logits(out, targets)
-            accuracy = self.accuracy(preds, targets)
-            f1 = self.f1(preds, targets)
-            auroc = self.auroc(probs, targets)
+
+            self.test_preds.append(preds)
+            self.test_probs.append(probs)
+            self.test_targets.append(targets)
             log_dict = {
                 "test/loss": loss,
-                "test/accuracy": accuracy,
-                "test/f1": f1,
-                "test/auroc": auroc,
             }
         elif self.dataset == 'dodh':
             targets = data.y
             loss = F.cross_entropy(out, targets)
             probs = torch.softmax(out, dim=-1)
             preds = torch.argmax(probs, dim=-1)
-            macro_f1 = self.macro_f1(preds, targets)
-            cohen_kappa = self.cohen_kappa(preds, targets)
+            self.test_preds.append(preds)
+            self.test_targets.append(targets)
 
             log_dict = {
                 "test/loss": loss,
-                "test/macro_f1": macro_f1,
-                "test/cohen_kappa": cohen_kappa,
             }
         else:
             raise NotImplementedError
@@ -258,22 +239,45 @@ class LightGTMamba(L.LightningModule):
         return loss
     
     def on_train_epoch_end(self):
-        if self.dataset == 'tuhz':
-            self.accuracy.reset()
-            self.f1.reset()
-            self.auroc.reset()
-        elif self.dataset == 'dodh':
-            self.macro_f1.reset()
-            self.cohen_kappa.reset()
-        else:
-            raise NotImplementedError
+        pass
+        # if self.dataset == 'tuhz':
+        #     self.accuracy.reset()
+        #     self.f1.reset()
+        #     self.auroc.reset()
+        # elif self.dataset == 'dodh':
+        #     self.macro_f1.reset()
+        #     self.cohen_kappa.reset()
+        # else:
+        #     raise NotImplementedError
         
     def on_validation_epoch_end(self):
         if self.dataset == 'tuhz':
+            preds, probs, targets = torch.cat(self.val_preds), torch.cat(self.val_probs), torch.cat(self.val_targets)
+            accuracy = self.accuracy(preds, targets)
+            f1 = self.f1(preds, targets)
+            auroc = self.auroc(probs, targets)
+            self.log_dict({
+                "val/accuracy": accuracy,
+                "val/f1": f1,
+                "val/auroc": auroc,
+            }, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+            self.val_preds = []
+            self.val_probs = []
+            self.val_targets = []
             self.accuracy.reset()
             self.f1.reset()
             self.auroc.reset()
         elif self.dataset == 'dodh':
+            preds, targets = torch.cat(self.val_preds), torch.cat(self.val_targets)
+            macro_f1 = self.macro_f1(preds, targets)
+            cohen_kappa = self.cohen_kappa(preds, targets)
+
+            self.log_dict({
+                "val/macro_f1": macro_f1,
+                "val/cohen_kappa": cohen_kappa,
+            }, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+            self.val_preds = []
+            self.val_targets = []
             self.macro_f1.reset()
             self.cohen_kappa.reset()
         else:
@@ -281,10 +285,33 @@ class LightGTMamba(L.LightningModule):
 
     def on_test_epoch_end(self):
         if self.dataset == 'tuhz':
+            preds, probs, targets = torch.cat(self.test_preds), torch.cat(self.test_probs), torch.cat(self.test_targets)
+            accuracy = self.accuracy(preds, targets)
+            f1 = self.f1(preds, targets)
+            auroc = self.auroc(probs, targets)
+            self.log_dict({
+                "test/accuracy": accuracy,
+                "test/f1": f1,
+                "test/auroc": auroc,
+            }, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+            self.test_preds = []
+            self.test_probs = []
+            self.test_targets = []
             self.accuracy.reset()
             self.f1.reset()
             self.auroc.reset()
         elif self.dataset == 'dodh':
+            preds, targets = torch.cat(self.test_preds), torch.cat(self.test_targets)
+            macro_f1 = self.macro_f1(preds, targets)
+            cohen_kappa = self.cohen_kappa(preds, targets)
+
+            self.log_dict({
+                "val/macro_f1": macro_f1,
+                "val/cohen_kappa": cohen_kappa,
+            }, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+            
+            self.test_preds = []
+            self.test_targets = []
             self.macro_f1.reset()
             self.cohen_kappa.reset()
         else:
