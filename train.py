@@ -55,22 +55,44 @@ def main(args):
     datamodule.setup()
     print("Model parameters: ", args.state_expansion_factor, args.seq_pool_type, args.vertex_pool_type, args.conv_type, args.model_dim, args.local_conv_width, args.num_tgmamba_layers)
     # print("Input dim: ", input_dim)
-    model = LightGTMamba(dataset=args.dataset, 
-                         conv_type=args.conv_type.lower(), 
-                         seq_pool_type=args.seq_pool_type, 
-                         vertex_pool_type=args.vertex_pool_type,
-                         input_dim=input_dim, 
-                         d_model=args.model_dim, 
-                         d_state=args.state_expansion_factor, 
-                         d_conv=args.local_conv_width,
-                         num_tgmamba_layers=args.num_tgmamba_layers, 
-                         optimizer_name=args.optimizer_name,
-                         lr=args.lr_init,
-                         weight_decay=args.weight_decay,
-                         rmsnorm=args.rmsnorm,
-                         edge_learner_attention=True,  # args.edge_learner_attention,
-                         attn_threshold=args.attn_threshold,
-                         edge_learner_time_varying=False,) # args.edge_learner_time_varying,)
+    
+    if args.load_model:
+        print(f"Loading model from {args.load_model}")
+        model = LightGTMamba.load_from_checkpoint(args.load_model, 
+                                                  dataset=args.dataset, 
+                            conv_type=args.conv_type.lower(), 
+                            seq_pool_type=args.seq_pool_type, 
+                            vertex_pool_type=args.vertex_pool_type,
+                            input_dim=input_dim, 
+                            d_model=args.model_dim, 
+                            d_state=args.state_expansion_factor, 
+                            d_conv=args.local_conv_width,
+                            num_tgmamba_layers=args.num_tgmamba_layers, 
+                            optimizer_name=args.optimizer_name,
+                            lr=args.lr_init,
+                            weight_decay=args.weight_decay,
+                            rmsnorm=args.rmsnorm,
+                            edge_learner_attention=True,  # args.edge_learner_attention,
+                            attn_threshold=args.attn_threshold,
+                            edge_learner_time_varying=False,
+                                                  )
+    else:
+        model = LightGTMamba(dataset=args.dataset, 
+                            conv_type=args.conv_type.lower(), 
+                            seq_pool_type=args.seq_pool_type, 
+                            vertex_pool_type=args.vertex_pool_type,
+                            input_dim=input_dim, 
+                            d_model=args.model_dim, 
+                            d_state=args.state_expansion_factor, 
+                            d_conv=args.local_conv_width,
+                            num_tgmamba_layers=args.num_tgmamba_layers, 
+                            optimizer_name=args.optimizer_name,
+                            lr=args.lr_init,
+                            weight_decay=args.weight_decay,
+                            rmsnorm=args.rmsnorm,
+                            edge_learner_attention=True,  # args.edge_learner_attention,
+                            attn_threshold=args.attn_threshold,
+                            edge_learner_time_varying=False,) # args.edge_learner_time_varying,)
 
     # Callbacks
     checkpoint_filename = f"depth-{args.num_tgmamba_layers}-state-{args.state_expansion_factor}_conv-{args.conv_type}_seq-{args.seq_pool_type}_vp-{args.vertex_pool_type}_fft-{str(args.dataset_has_fft)}_{{epoch:02d}}"
@@ -103,14 +125,17 @@ def main(args):
         strategy=DDPStrategy(find_unused_parameters=False),
     )
 
-    trainer.fit(model, datamodule=datamodule)
-    print("Training complete.")
-
-    print("Testing best model...")
-    best_results = trainer.test(
-        datamodule=datamodule,
-        ckpt_path="best",
-    )
+    if not args.load_model:
+        trainer.fit(model, datamodule=datamodule)
+        print("Training complete.")
+        print("Testing best model...")
+        best_results = trainer.test(
+            datamodule=datamodule,
+            ckpt_path="best",
+        )
+    else:
+        print("Testing loaded model...")
+        best_results = trainer.test(model, datamodule=datamodule)
 
     # Print or process the results as needed
     print("Best model results:", best_results)
@@ -119,7 +144,7 @@ def main(args):
     # from scipy.io import savemat
     # mdic = {"roc_fpr": fpr, "roc_tpr": tpr}
     # savemat("TGMamba/results/test_roc.mat", mdic)
-
+# /home/amli/TGMamba/results/template/depth-1-state-32_conv-graphconv_seq-mean_vp-max_fft-True_36.ckpt
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="TGMamba Training Script")
     parser.add_argument('--rand_seed', type=int, default=42)
@@ -152,6 +177,7 @@ if __name__ == "__main__":
     parser.add_argument('--patience', type=int, default=15)
     parser.add_argument('--gpu_id', nargs='+', type=int, default=[0])
     parser.add_argument('--accumulate_grad_batches', type=int, default=1)
+    parser.add_argument('--load_model', type=str, default=None, help="Path to a saved model checkpoint to load and test")
     
     args = parser.parse_args()
     main(args)

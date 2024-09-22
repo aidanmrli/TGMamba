@@ -309,8 +309,8 @@ class LightGTMamba(L.LightningModule):
             cohen_kappa = self.cohen_kappa(preds, targets)
 
             self.log_dict({
-                "val/macro_f1": macro_f1,
-                "val/cohen_kappa": cohen_kappa,
+                "test/macro_f1": macro_f1,
+                "test/cohen_kappa": cohen_kappa,
             }, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
             
             self.test_preds = []
