@@ -53,7 +53,7 @@ def load_data(args):
 def objective(trial, args, datamodule, input_dim, stopping_metric):
     # Suggest hyperparameters
     trial_params = {
-        'num_tgmamba_layers': trial.suggest_int('num_tgmamba_layers', 1, 4),
+        'num_tgmamba_layers': trial.suggest_int('num_tgmamba_layers', 1, 3),
         'model_dim': trial.suggest_categorical('model_dim', [16, 32, 50]),
         'state_expansion_factor': trial.suggest_categorical('state_expansion_factor', [16, 32, 48, 64, 128]),
         # 'conv_type': trial.suggest_categorical('conv_type', ['gcnconv', 'graphconv', 'chebconv', 'gatv2conv']),
@@ -70,7 +70,7 @@ def objective(trial, args, datamodule, input_dim, stopping_metric):
     }
     
     # Initialize WandbLogger
-    with wandb.init(project="{args.dataset}-hyperparameter-search-attn", name=f"vector_trial_{trial.number}", config=trial_params, reinit=True) as run:
+    with wandb.init(project=f"{args.dataset}-hyperparameter-search-no-timevarying", name=f"trial_{trial.number}", config=trial_params, reinit=True) as run:
         wandb_logger = WandbLogger(experiment=run)    
 
         try:

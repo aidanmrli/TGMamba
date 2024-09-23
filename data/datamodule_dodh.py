@@ -313,30 +313,20 @@ class ImbalancedDatasetSampler(torch.utils.data.sampler.Sampler):
 
 #         return data
 class PreprocessedDODHDataset(Dataset):
-    def __init__(self, root, transform=None, pre_transform=None):
-        super().__init__(root, transform, pre_transform)
-        self.root = root
-        self.labels = None
-        self.data_files = sorted([f for f in os.listdir(self.root) if f.startswith('data_')])
-
-    @property
-    def processed_file_names(self):
-        return self.data_files
+    def __init__(self, file_path, transform=None, pre_transform=None):
+        super().__init__(transform, pre_transform)
+        self.file_path = file_path
+        self.data = torch.load(file_path)
+        self.num_samples = self.data['num_samples']
 
     def len(self):
-        return len(self.data_files)
+        return self.num_samples
 
     def get(self, idx):
-        data = torch.load(os.path.join(self.root, f'data_{idx}.pt'))
-        return data
+        return self.data['data'][idx]
 
     def get_labels(self):
-        if self.labels is None:
-            self.labels = []
-            for idx in range(self.len()):
-                data = self.get(idx)
-                self.labels.append(data.y.item())
-        return torch.FloatTensor(self.labels)
+        return torch.FloatTensor([data.y.item() for data in self.data['data']])
 
 class DODHDataModule(L.LightningDataModule):
     def __init__(
@@ -368,7 +358,8 @@ class DODHDataModule(L.LightningDataModule):
 
     def setup(self, stage=None):
         for split in ['train', 'val', 'test']:
-            dataset = PreprocessedDODHDataset(root=os.path.join(self.preprocessed_data_dir, f'preprocessed_dodh_{split}'))
+            file_path = os.path.join(self.preprocessed_data_dir, f'dodh_{split}.pt')
+            dataset = PreprocessedDODHDataset(file_path=file_path)
             setattr(self, f"{split}_dataset", dataset)
             
         if self.use_class_weight:
