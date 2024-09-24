@@ -11,9 +11,9 @@ import argparse
 from pytorch_lightning.loggers import WandbLogger
 from data import DODHDataModule, TUHZDataModule, BCIchaDataModule
 
-DODH_RAW_DATA_DIR='/home/amli/dreem-learning-open/data/h5/dodh'
+DODH_RAW_DATA_DIR='/home/amli/dreem-learning-open/data/h5/dodh/'
 DODH_PROCESSED_DATA_DIR='/home/amli/TGMamba/data/'
-TUHZ_DATA_DIR='/home/amli/processed_dataset'
+TUHZ_DATA_DIR='/home/amli/TGMamba/data/tuhz/processed_dataset/'
 BCICHA_DATA_DIR='/home/amli/TGMamba/data/BCIcha/'
 
 def main(args):
@@ -49,6 +49,7 @@ def main(args):
         )
         stopping_callback_metric = "val/auroc"
         input_dim = 100 if args.dataset_has_fft else 1
+        project_name_suffix = "_tuhz"
     elif args.dataset == 'bcicha':
         SUBJECT_LIST = [2, 6, 7, 11, 12, 13, 14, 16, 17, 18, 20, 21, 22, 23, 24, 26]
         datamodule = BCIchaDataModule(
@@ -59,6 +60,7 @@ def main(args):
         )
         stopping_callback_metric = "val/auroc"
         input_dim = 1
+        project_name_suffix = "_bcicha"
         
     # Prepare the data
     datamodule.prepare_data()
@@ -170,13 +172,12 @@ if __name__ == "__main__":
     parser.add_argument('--state_expansion_factor', type=int, default=32)
     parser.add_argument('--local_conv_width', type=int, default=4)
     parser.add_argument('--num_tgmamba_layers', type=int, default=1)
-    parser.add_argument('--num_vertices', type=int, default=19)
     parser.add_argument('--rmsnorm', action='store_true', help="Enable RMSNorm in the model")
     parser.add_argument('--edge_learner_layers', type=int, default=1)
     parser.add_argument('--edge_learner_attention', action='store_true', help="Enable attention in the edge learner")
+    parser.add_argument('--edge_learner_time_varying', action='store_true', help="Enable time-varying edge weights in the edge learner")
     parser.add_argument('--attn_threshold', type=float, default=0.2)
     parser.add_argument('--attn_softmax_temp', type=float, default=0.01)
-    parser.add_argument('--edge_learner_time_varying', action='store_true', help="Enable time-varying edge weights in the edge learner")
     parser.add_argument('--train_batch_size', type=int, default=4)
     parser.add_argument('--val_batch_size', type=int, default=256)
     parser.add_argument('--test_batch_size', type=int, default=256)

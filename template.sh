@@ -1,30 +1,31 @@
 #!/bin/bash
 
-python train.py \
+python /home/amli/TGMamba/train.py \
+    --save_dir "/home/amli/TGMamba/results/template" \
+    --rand_seed 123 \
+    --dataset 'tuhz' \
+    --dataset_has_fft \
     --seq_pool_type mean \
     --vertex_pool_type max \
-    --save_dir "results/template" \
-    --rand_seed 5 \
     --conv_type graphconv \
-    --dataset_has_fft \
-    --model_dim 32 \
-    --state_expansion_factor 32 \
+    --model_dim 50 \
+    --state_expansion_factor 48 \
     --local_conv_width 4 \
-    --num_tgmamba_layers 2 \
-    --num_vertices 19 \
+    --num_tgmamba_layers 1 \
     --rmsnorm \
+    --edge_learner_attention \
     --edge_learner_layers 1 \
+    --edge_learner_time_varying \
+    --attn_softmax_temp 0.5 \
+    --attn_threshold 0.2 \
     --train_batch_size 256 \
     --val_batch_size 64 \
     --test_batch_size 64 \
     --num_workers 12 \
-    --lr_init 5e-4 \
-    --optimizer adamw \
+    --lr_init 0.00015 \
+    --weight_decay 0.3 \
+    --optimizer_name adamw \
     --scheduler cosine \
     --num_epochs 100 \
     --patience 20 \
-    --gpu_id 4 \
-    --edge_learner_attention \
-    --edge_learner_time_varying \
-    --attn_softmax_temp 0.01 \
-    --attn_threshold 0.1
+    --gpu_id 0 \

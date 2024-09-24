@@ -10,7 +10,7 @@ from optuna.visualization import plot_param_importances
 from lightning.pytorch.callbacks import EarlyStopping
 from lightning.pytorch.strategies import DDPStrategy
 from lightning.pytorch.loggers import WandbLogger
-from data import TUHZDataModule, DODHDataModule
+from data import TUHZDataModule, DODHDataModule, BCIchaDataModule
 import joblib
 import wandb
 import logging
@@ -19,12 +19,13 @@ import sys
 # Import your model and dataset
 from model import LightGTMamba  # Make sure this import works
 DODH_PROCESSED_DATA_DIR='/h/liaidan/TGMamba/data/'
+TUHZ_PROCESSED_DATA_DIR='/h/liaidan/TGMamba/data/tuhz/processed_dataset/'
+BCICHA_DATA_DIR='/h/liaidan/TGMamba/data/BCIcha/'
 
 def load_data(args):
     if args.dataset == 'tuhz':
-        data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'processed_dataset')
         datamodule = TUHZDataModule(
-            data_dir=data_dir,
+            data_dir=TUHZ_PROCESSED_DATA_DIR,
             batch_size=args.train_batch_size,
             num_workers=args.num_workers,
             dataset_has_fft=True,
@@ -43,6 +44,16 @@ def load_data(args):
         )
         input_dim = 129
         stopping_metric = "val/macro_f1"
+    elif args.dataset == 'bcicha':
+        SUBJECT_LIST = [2, 6, 7, 11, 12, 13, 14, 16, 17, 18, 20, 21, 22, 23, 24, 26]
+        datamodule = BCIchaDataModule(
+            data_dir=BCICHA_DATA_DIR,
+            subject=12,
+            batch_size=args.train_batch_size,
+            num_workers=args.num_workers,
+        )
+        stopping_metric = "val/auroc"
+        input_dim = 1
     else:
         raise ValueError(f"Unsupported dataset: {args.dataset}")
 
@@ -53,7 +64,7 @@ def load_data(args):
 def objective(trial, args, datamodule, input_dim, stopping_metric):
     # Suggest hyperparameters
     trial_params = {
-        'num_tgmamba_layers': trial.suggest_int('num_tgmamba_layers', 1, 3),
+        # 'num_tgmamba_layers': trial.suggest_int('num_tgmamba_layers', 1, 3),
         'model_dim': trial.suggest_categorical('model_dim', [16, 32, 50]),
         'state_expansion_factor': trial.suggest_categorical('state_expansion_factor', [16, 32, 48, 64, 128]),
         # 'conv_type': trial.suggest_categorical('conv_type', ['gcnconv', 'graphconv', 'chebconv', 'gatv2conv']),
@@ -65,12 +76,12 @@ def objective(trial, args, datamodule, input_dim, stopping_metric):
         'attn_softmax_temp': trial.suggest_float('attn_softmax_temp', 0.001, 1.0, log=True),
         'seq_pool_type': trial.suggest_categorical('seq_pool_type', ['last', 'mean', 'max']),
         'vertex_pool_type': trial.suggest_categorical('vertex_pool_type', ['mean', 'max']),
-        'edge_learner_time_varying': trial.suggest_categorical('edge_learner_time_varying', [True, False]),
-        'edge_learner_layers': trial.suggest_int('edge_learner_layers', 1, 3),
+        # 'edge_learner_time_varying': trial.suggest_categorical('edge_learner_time_varying', [True, False]),
+        # 'edge_learner_layers': trial.suggest_int('edge_learner_layers', 1, 3),
     }
     
     # Initialize WandbLogger
-    with wandb.init(project=f"{args.dataset}-hyperparameter-search-no-timevarying", name=f"trial_{trial.number}", config=trial_params, reinit=True) as run:
+    with wandb.init(project=f"{args.dataset}-patient12-hyperparameter-search-attn", name=f"trial_{trial.number}", config=trial_params, reinit=True) as run:
         wandb_logger = WandbLogger(experiment=run)    
 
         try:
@@ -84,14 +95,14 @@ def objective(trial, args, datamodule, input_dim, stopping_metric):
                 d_model=trial_params['model_dim'],
                 d_state=trial_params['state_expansion_factor'],
                 d_conv=4,
-                num_tgmamba_layers=trial_params['num_tgmamba_layers'],
+                num_tgmamba_layers=1,
                 optimizer_name='adamw', # haven't tried this yet,
                 lr=trial_params['lr_init'],
                 weight_decay=trial_params['weight_decay'],
                 rmsnorm=True,
                 edge_learner_attention=True,
-                edge_learner_layers=trial_params['edge_learner_layers'],
-                edge_learner_time_varying=trial_params['edge_learner_time_varying'],
+                edge_learner_layers=1,
+                edge_learner_time_varying=True,
                 attn_time_varying=False,
                 attn_softmax_temp=trial_params['attn_softmax_temp'],
                 attn_threshold=trial_params['attn_threshold'],
@@ -113,7 +124,7 @@ def objective(trial, args, datamodule, input_dim, stopping_metric):
             trainer = L.Trainer(
                 logger=wandb_logger,
                 callbacks=[early_stop_callback, pruning_callback],
-                max_epochs=40,
+                max_epochs=50,
                 accelerator="gpu",
                 devices=1,  # Use GPUs 3 and 4 (index 2 and 3)
                 # strategy="ddp",  # Enable DDP for multi-GPU training
@@ -177,11 +188,11 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="TGMamba Hyperparameter Search")
-    parser.add_argument('--dataset', type=str, choices=['tuhz', 'dodh'], required=True, help="Dataset to use for hyperparameter search")
+    parser.add_argument('--dataset', type=str, choices=['tuhz', 'dodh', 'bcicha'], required=True, help="Dataset to use for hyperparameter search")
     parser.add_argument('--rand_seed', type=int, default=42)
-    parser.add_argument('--save_dir', type=str, default='optuna_results/tuhz')
-    parser.add_argument('--train_batch_size', type=int, default=64)
-    parser.add_argument('--test_batch_size', type=int, default=64)
+    parser.add_argument('--save_dir', type=str, default='optuna_results/')
+    parser.add_argument('--train_batch_size', type=int, default=6)
+    parser.add_argument('--test_batch_size', type=int, default=6)
     parser.add_argument('--num_workers', type=int, default=12)
     parser.add_argument('--gpu_id', nargs='+', type=int, default=[0], help="GPU IDs to use for training")
     parser.add_argument('--accumulate_grad_batches', type=int, default=1)
