@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from torch_geometric.data import Data
 import torch.optim as optim
 from mamba_ssm import TGMamba
-from torchmetrics import Accuracy, F1Score, AUROC, CohenKappa
+from torchmetrics import Accuracy, F1Score, Recall, AUROC, CohenKappa
 from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, CosineAnnealingWarmRestarts, SequentialLR
 
 
@@ -40,6 +40,7 @@ class LightGTMamba(L.LightningModule):
             self.num_vertices = 19
             self.accuracy = Accuracy(task="binary")
             self.f1 = F1Score(task="binary")
+            self.recall = Recall(task="binary")
             self.auroc = AUROC(task="binary")
         elif dataset == 'dodh':
             num_classes = 5
@@ -47,7 +48,13 @@ class LightGTMamba(L.LightningModule):
             # for DOD-H
             self.macro_f1 = F1Score(task="multiclass", average="macro", num_classes=num_classes)
             self.cohen_kappa = CohenKappa(task="multiclass", num_classes=num_classes)
-
+        elif dataset == 'bcicha':
+            num_classes = 1
+            self.num_vertices = 56
+            self.accuracy = Accuracy(task="binary")
+            self.f1 = F1Score(task="binary")
+            self.recall = Recall(task="binary")
+            self.auroc = AUROC(task="binary")
         self.seq_pool_type = seq_pool_type
         self.vertex_pool_type = vertex_pool_type
         self.lr = lr
@@ -95,7 +102,7 @@ class LightGTMamba(L.LightningModule):
         # print("data.x.size(): ", data.x.size())
         num_vertices = self.num_vertices
         batch, seqlen = None, None
-        if self.dataset == 'tuhz':
+        if self.dataset == 'tuhz' or self.dataset == 'bcicha':
             batch, seqlen, _ = data.x.size()
             batch = batch // num_vertices
         elif self.dataset == 'dodh':
@@ -147,7 +154,7 @@ class LightGTMamba(L.LightningModule):
         out = self(data)
         assert out.size(0) == data.y.size(0), "Batch size mismatch"
         
-        if self.dataset == 'tuhz':
+        if self.dataset == 'tuhz' or self.dataset == 'bcicha':
             targets = data.y.type(torch.float32).reshape(-1, 1)
             loss = F.binary_cross_entropy_with_logits(out, targets)
             
@@ -173,7 +180,7 @@ class LightGTMamba(L.LightningModule):
         out = self(data)
         assert out.size(0) == data.y.size(0), "Batch size mismatch"
 
-        if self.dataset == 'tuhz':
+        if self.dataset == 'tuhz' or self.dataset == 'bcicha':
             probs = torch.sigmoid(out)
             preds = (probs > 0.5).type(torch.float32)
             targets = data.y.type(torch.float32).reshape(-1, 1)
@@ -211,7 +218,7 @@ class LightGTMamba(L.LightningModule):
         out = self(data)
         assert out.size(0) == data.y.size(0), "Batch size mismatch"
         
-        if self.dataset == 'tuhz':
+        if self.dataset == 'tuhz' or self.dataset == 'bcicha':
             probs = torch.sigmoid(out)
             preds = (probs > 0.5).type(torch.float32)
             targets = data.y.type(torch.float32).reshape(-1, 1)
@@ -243,26 +250,19 @@ class LightGTMamba(L.LightningModule):
     
     def on_train_epoch_end(self):
         pass
-        # if self.dataset == 'tuhz':
-        #     self.accuracy.reset()
-        #     self.f1.reset()
-        #     self.auroc.reset()
-        # elif self.dataset == 'dodh':
-        #     self.macro_f1.reset()
-        #     self.cohen_kappa.reset()
-        # else:
-        #     raise NotImplementedError
         
     def on_validation_epoch_end(self):
-        if self.dataset == 'tuhz':
+        if self.dataset == 'tuhz' or self.dataset == 'bcicha':
             preds, probs, targets = torch.cat(self.val_preds), torch.cat(self.val_probs), torch.cat(self.val_targets)
             accuracy = self.accuracy(preds, targets)
             f1 = self.f1(preds, targets)
+            recall = self.recall(preds, targets)
             auroc = self.auroc(probs, targets)
             self.log_dict({
-                "val/accuracy": accuracy,
-                "val/f1": f1,
                 "val/auroc": auroc,
+                "val/f1": f1,
+                "val/recall": recall,
+                "val/accuracy": accuracy,
             }, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
             self.val_preds = []
             self.val_probs = []
@@ -270,6 +270,8 @@ class LightGTMamba(L.LightningModule):
             self.accuracy.reset()
             self.f1.reset()
             self.auroc.reset()
+            self.recall.reset()
+            
         elif self.dataset == 'dodh':
             preds, targets = torch.cat(self.val_preds), torch.cat(self.val_targets)
             macro_f1 = self.macro_f1(preds, targets)
@@ -287,15 +289,17 @@ class LightGTMamba(L.LightningModule):
             raise NotImplementedError
 
     def on_test_epoch_end(self):
-        if self.dataset == 'tuhz':
+        if self.dataset == 'tuhz' or self.dataset == 'bcicha':
             preds, probs, targets = torch.cat(self.test_preds), torch.cat(self.test_probs), torch.cat(self.test_targets)
             accuracy = self.accuracy(preds, targets)
             f1 = self.f1(preds, targets)
             auroc = self.auroc(probs, targets)
+            recall = self.recall(preds, targets)
             self.log_dict({
-                "test/accuracy": accuracy,
-                "test/f1": f1,
                 "test/auroc": auroc,
+                "test/f1": f1,
+                "test/recall": recall,
+                "test/accuracy": accuracy,
             }, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
             self.test_preds = []
             self.test_probs = []
@@ -303,6 +307,7 @@ class LightGTMamba(L.LightningModule):
             self.accuracy.reset()
             self.f1.reset()
             self.auroc.reset()
+            self.recall.reset()
         elif self.dataset == 'dodh':
             preds, targets = torch.cat(self.test_preds), torch.cat(self.test_targets)
             macro_f1 = self.macro_f1(preds, targets)

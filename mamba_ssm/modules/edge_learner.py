@@ -29,8 +29,8 @@ class EdgeLearner(nn.Module):
         self.act = nn.SiLU()
 
         if use_attention:
-            self.Q_proj = nn.Linear(d_model, d_model * 16)
-            self.K_proj = nn.Linear(d_model, d_model * 16)
+            self.Q_proj = nn.Linear(d_model, d_model * 4)
+            self.K_proj = nn.Linear(d_model, d_model * 4)
             # self.attn_skip_param = nn.Parameter(torch.tensor(0.5))
             self.attn_threshold = attention_threshold
             self.attn_scale = torch.sqrt(torch.tensor(d_model, dtype=torch.float))
@@ -51,7 +51,7 @@ class EdgeLearner(nn.Module):
                     if i < num_linear_layers - 1:
                         layers.append(self.act)
                 self.edge_transform = nn.Sequential(*layers)
-            self.skip_param = nn.Parameter(torch.tensor(0.9))   # if 1.0, use original edge weights, if 0.0, use learned edge weights
+            self.skip_param = nn.Parameter(torch.tensor(0.95))   # if 1.0, use original edge weights, if 0.0, use learned edge weights
 
     def forward(self, hidden_states, edge_index, edge_weight):
         """

@@ -9,11 +9,12 @@ from torch_geometric.loader import DataLoader
 from model import LightGTMamba
 import argparse
 from pytorch_lightning.loggers import WandbLogger
-from data import DODHDataModule, TUHZDataModule
+from data import DODHDataModule, TUHZDataModule, BCIchaDataModule
 
 DODH_RAW_DATA_DIR='/home/amli/dreem-learning-open/data/h5/dodh'
 DODH_PROCESSED_DATA_DIR='/home/amli/TGMamba/data/'
-
+TUHZ_DATA_DIR='/home/amli/processed_dataset'
+BCICHA_DATA_DIR='/home/amli/TGMamba/data/BCIcha/'
 
 def main(args):
     # Set random seed
@@ -22,8 +23,6 @@ def main(args):
     with open(os.path.join(args.save_dir, "args.json"), "w") as f:
         json.dump(vars(args), f, indent=4, sort_keys=True)
     
-
-    data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'processed_dataset')
     
     # TODO: instead of loading the train dataset that way, use this datamodule
     project_name_suffix = ""
@@ -40,16 +39,27 @@ def main(args):
             )
         stopping_callback_metric = "val/macro_f1"
         project_name_suffix = "_dodh"
-        input_dim = 129 # if args.dataset_has_fft else 1
+        input_dim = 129 if args.dataset_has_fft else 1
     elif args.dataset == 'tuhz':
         datamodule = TUHZDataModule(
-            data_dir=data_dir,
+            data_dir=TUHZ_DATA_DIR,
             batch_size=args.train_batch_size,
             num_workers=args.num_workers,
             dataset_has_fft=args.dataset_has_fft,
         )
         stopping_callback_metric = "val/auroc"
-        input_dim = 100 # if args.dataset_has_fft else 1
+        input_dim = 100 if args.dataset_has_fft else 1
+    elif args.dataset == 'bcicha':
+        SUBJECT_LIST = [2, 6, 7, 11, 12, 13, 14, 16, 17, 18, 20, 21, 22, 23, 24, 26]
+        datamodule = BCIchaDataModule(
+            data_dir=BCICHA_DATA_DIR,
+            subject=2,
+            batch_size=args.train_batch_size,
+            num_workers=args.num_workers,
+        )
+        stopping_callback_metric = "val/auroc"
+        input_dim = 1
+        
     # Prepare the data
     datamodule.prepare_data()
     datamodule.setup()
@@ -89,10 +99,12 @@ def main(args):
                             optimizer_name=args.optimizer_name,
                             lr=args.lr_init,
                             weight_decay=args.weight_decay,
-                            rmsnorm=args.rmsnorm,
-                            edge_learner_attention=True,  # args.edge_learner_attention,
+                            rmsnorm=True,
+                            edge_learner_attention=args.edge_learner_attention,
                             attn_threshold=args.attn_threshold,
-                            edge_learner_time_varying=False,) # args.edge_learner_time_varying,)
+                            attn_softmax_temp=args.attn_softmax_temp,
+                            edge_learner_time_varying=args.edge_learner_time_varying,
+                            edge_learner_layers=args.edge_learner_layers,)
 
     # Callbacks
     checkpoint_filename = f"depth-{args.num_tgmamba_layers}-state-{args.state_expansion_factor}_conv-{args.conv_type}_seq-{args.seq_pool_type}_vp-{args.vertex_pool_type}_fft-{str(args.dataset_has_fft)}_{{epoch:02d}}"
@@ -110,7 +122,7 @@ def main(args):
         monitor=stopping_callback_metric, mode="max", patience=args.patience
     )
 
-    lr_monitor = LearningRateMonitor(logging_interval="step")
+    lr_monitor = LearningRateMonitor(logging_interval="epoch")
     project_name = "tgmamba" + project_name_suffix
     wandb_logger = WandbLogger(project=project_name, log_model="all", config=vars(args))
 
@@ -157,7 +169,7 @@ if __name__ == "__main__":
     parser.add_argument('--model_dim', type=int, default=32)
     parser.add_argument('--state_expansion_factor', type=int, default=32)
     parser.add_argument('--local_conv_width', type=int, default=4)
-    parser.add_argument('--num_tgmamba_layers', type=int, default=2)
+    parser.add_argument('--num_tgmamba_layers', type=int, default=1)
     parser.add_argument('--num_vertices', type=int, default=19)
     parser.add_argument('--rmsnorm', action='store_true', help="Enable RMSNorm in the model")
     parser.add_argument('--edge_learner_layers', type=int, default=1)
