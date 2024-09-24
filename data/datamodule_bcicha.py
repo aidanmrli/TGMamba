@@ -6,12 +6,15 @@ from lightning import LightningDataModule
 SUBJECT_LIST = [2, 6, 7, 11, 12, 13, 14, 16, 17, 18, 20, 21, 22, 23, 24, 26]
 
 class BCIchaDataModule(LightningDataModule):
-    def __init__(self, data_dir: str, subject: int, batch_size: int = 32, num_workers: int = 4):
+    def __init__(self, data_dir: str, subject: int, dataset_has_fft: bool, batch_size: int = 32, num_workers: int = 4):
         super().__init__()
         self.data_dir = data_dir
         self.subject = subject
         self.batch_size = batch_size
         self.num_workers = num_workers
+        self.dataset_has_fft = dataset_has_fft
+        if self.dataset_has_fft:
+            self.data_dir = os.path.join(self.data_dir, 'fft')
 
     def prepare_data(self):
         # This method is called only on 1 GPU in distributed setting
@@ -21,6 +24,7 @@ class BCIchaDataModule(LightningDataModule):
 
     def setup(self, stage=None):
         # Load the preprocessed datasets
+        print("Loading from self.data_dir", self.data_dir)
         self.train_dataset = torch.load(os.path.join(self.data_dir, f'train_dataset_S{self.subject:02d}.pt'))
         self.val_dataset = torch.load(os.path.join(self.data_dir, f'val_dataset_S{self.subject:02d}.pt'))
         self.test_dataset = torch.load(os.path.join(self.data_dir, f'test_dataset_S{self.subject:02d}.pt'))

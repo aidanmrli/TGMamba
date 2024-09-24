@@ -123,10 +123,10 @@ class PreprocessedDODHDataset(Dataset):
 
     @property
     def processed_file_names(self):
-        return ['data.pt']
+        return [f'data_{i}.pt' for i in range(len(self.file_marker))]
 
     def process(self):
-        data_list = []
+        # data_list = []
         
         for idx in tqdm(range(len(self.file_marker))):
             h5_file_name = self.file_marker["record_id"].iloc[idx]
@@ -148,20 +148,22 @@ class PreprocessedDODHDataset(Dataset):
             x = torch.FloatTensor(x) # .unsqueeze(-1)
             y = torch.LongTensor([y])
             data = Data(x=x, y=y)
-            data_list.append(data)
+            # data_list.append(data)
+            torch.save(data, self.processed_paths[idx])
 
-        data, slices = self.collate(data_list)
-        torch.save((data, slices), self.processed_paths[0])
+
+        # data, slices = collate(data_list)
+        # torch.save((data, slices), self.processed_paths[0])
 
     def len(self):
-        return len(self.file_marker)
+        return len(self.processed_file_names)
 
     def get(self, idx):
-        data = torch.load(self.processed_paths[0])
-        return data[idx]
+        data = torch.load(self.processed_paths[idx])
+        return data
 
 
-for split in ['train', 'val', 'test']:
+for split in ['train', 'val']:  # 'train', 'val', 'test'
     file_marker = pd.read_csv(os.path.join(DODH_FILEMARKER_DIR, f"{split}_file_markers.csv"))
     dataset = PreprocessedDODHDataset(
         root=f'./data/preprocessed_dodh_{split}',
@@ -169,4 +171,5 @@ for split in ['train', 'val', 'test']:
         raw_data_path=DODH_RAW_DATA_DIR
     )
     # This will trigger the processing and saving
-    _ = dataset[0]
+    # _ = dataset[0]
+    dataset.process()
