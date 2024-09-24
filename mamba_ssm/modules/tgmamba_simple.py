@@ -105,6 +105,11 @@ class TGMamba(nn.Module):
             self.gconv_C = GATv2Conv(self.d_state, self.d_state, heads=1, concat=False, bias=False)
         else:
             raise NotImplementedError("Only GCNConv, ChebConv, and GraphConv are supported")
+        
+
+        self.mlp1 = nn.Linear(self.d_inner, self.d_inner)
+        self.mlp_act = nn.SiLU()
+        self.mlp2 = nn.Linear(self.d_inner, self.d_inner)
         ################
         
         # weights have shape (output_dim, input_dim). So (d_inner*2, d_model) = (64, 16)
@@ -328,8 +333,12 @@ class TGMamba(nn.Module):
             z = rearrange(z, "b d l -> b l d")  # (B*V, L, d_inner)
             y = self.norm(y, z)
 
-        out = self.out_proj(y)  # (B*V, L, d_model)
-        assert not torch.isnan(y).any(), "NaN in y after out_proj"
+        # TODO: add a MLP layer and another normalization layer here
+        out = self.mlp2(self.mlp_act(self.mlp1(y)))
+        out = self.norm(out, y)
+        
+        out = self.out_proj(out)  # (B*V, L, d_model)
+        assert not torch.isnan(out).any(), "NaN in y after out_proj"
         return out, edge_index, edge_weight
 
     def step(self, hidden_states, conv_state, ssm_state, edge_index, edge_weight):
