@@ -1,0 +1,32 @@
+#!/bin/bash
+
+python /home/amli/TGMamba/train.py \
+    --save_dir "/home/amli/TGMamba/results/template" \
+    --rand_seed 123 \
+    --dataset 'bcicha' \
+    --dataset_has_fft \
+    --subject 23 \
+    --conv_type graphconv \
+    --local_conv_width 4 \
+    --num_epochs 1000 \
+    --patience 150 \
+    --gpu_id 6 \
+    --attn_softmax_temp 0.0047157 \
+    --attn_threshold 0.15 \
+    --edge_learner_attention \
+    --edge_learner_layers 1 \
+    --edge_learner_time_varying \
+    --lr_init 0.00015906 \
+    --model_dim 16 \
+    --num_tgmamba_layers 1 \
+    --seq_pool_type mean \
+    --state_expansion_factor 64 \
+    --vertex_pool_type max \
+    --weight_decay 0.17549 \
+    --rmsnorm \
+    --train_batch_size 60 \
+    --val_batch_size 60 \
+    --test_batch_size 60 \
+    --num_workers 12 \
+    --optimizer_name adamw \
+    --scheduler cosine \

@@ -9,7 +9,7 @@ from torch_geometric.loader import DataLoader
 from model import LightGTMamba
 import argparse
 from pytorch_lightning.loggers import WandbLogger
-from data import DODHDataModule, TUHZDataModule, BCIchaDataModule
+from data import DODHDataModule, TUHZDataModule, BCIchaDataModule, BCIchaDataset
 
 DODH_RAW_DATA_DIR='/home/amli/dreem-learning-open/data/h5/dodh/'
 DODH_PROCESSED_DATA_DIR='/home/amli/TGMamba/data/'
@@ -54,12 +54,13 @@ def main(args):
         SUBJECT_LIST = [2, 6, 7, 11, 12, 13, 14, 16, 17, 18, 20, 21, 22, 23, 24, 26]
         datamodule = BCIchaDataModule(
             data_dir=BCICHA_DATA_DIR,
-            subject=2,
+            subject=args.subject,
             batch_size=args.train_batch_size,
             num_workers=args.num_workers,
+            dataset_has_fft = args.dataset_has_fft
         )
         stopping_callback_metric = "val/auroc"
-        input_dim = 1
+        input_dim = 11 if args.dataset_has_fft else 1
         project_name_suffix = "_bcicha"
         
     # Prepare the data
@@ -101,6 +102,7 @@ def main(args):
                             optimizer_name=args.optimizer_name,
                             lr=args.lr_init,
                             weight_decay=args.weight_decay,
+                            num_epochs=args.num_epochs,
                             rmsnorm=True,
                             edge_learner_attention=args.edge_learner_attention,
                             attn_threshold=args.attn_threshold,
@@ -109,7 +111,7 @@ def main(args):
                             edge_learner_layers=args.edge_learner_layers,)
 
     # Callbacks
-    checkpoint_filename = f"depth-{args.num_tgmamba_layers}-state-{args.state_expansion_factor}_conv-{args.conv_type}_seq-{args.seq_pool_type}_vp-{args.vertex_pool_type}_fft-{str(args.dataset_has_fft)}_{{epoch:02d}}"
+    checkpoint_filename = f"{args.dataset}-subject{args.subject}-depth-{args.num_tgmamba_layers}-state-{args.state_expansion_factor}_conv-{args.conv_type}_seq-{args.seq_pool_type}_vp-{args.vertex_pool_type}_fft-{str(args.dataset_has_fft)}_{{epoch:02d}}"
     checkpoint_callback = ModelCheckpoint(
         monitor=stopping_callback_metric,
         mode="max",
@@ -126,8 +128,11 @@ def main(args):
 
     lr_monitor = LearningRateMonitor(logging_interval="epoch")
     project_name = "tgmamba" + project_name_suffix
-    wandb_logger = WandbLogger(project=project_name, log_model="all", config=vars(args))
-
+    if args.dataset == 'bcicha':
+        wandb_logger = WandbLogger(project=project_name, log_model="all", config=vars(args), tags=[f"subject_{args.subject}"])
+    else:
+        wandb_logger = WandbLogger(project=project_name, log_model="all", config=vars(args))
+        
     trainer = L.Trainer(
         accelerator="gpu",
         max_epochs=args.num_epochs,
@@ -164,6 +169,7 @@ if __name__ == "__main__":
     parser.add_argument('--rand_seed', type=int, default=42)
     parser.add_argument('--save_dir', type=str, default='TGMamba/results')
     parser.add_argument('--dataset', type=str, default='dodh')
+    parser.add_argument('--subject', type=int, default=2)
     parser.add_argument('--dataset_has_fft', action='store_true', help="Enable FFT-processed data in the model")
     parser.add_argument('--conv_type', type=str, default='graphconv')
     parser.add_argument('--seq_pool_type', type=str, default='mean')

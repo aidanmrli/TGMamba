@@ -22,6 +22,7 @@ class LightGTMamba(L.LightningModule):
                  optimizer_name='adamw', 
                  lr=5e-4,
                  weight_decay=1e-4,
+                 num_epochs=100,
                  rmsnorm=True,
                  edge_learner_layers=1,
                  edge_learner_attention=True,
@@ -59,6 +60,7 @@ class LightGTMamba(L.LightningModule):
         self.vertex_pool_type = vertex_pool_type
         self.lr = lr
         self.weight_decay = weight_decay
+        self.num_epochs = num_epochs
         self.optimizer_name = optimizer_name
         self.rmsnorm = rmsnorm
         self.edge_learner_layers = edge_learner_layers
@@ -349,7 +351,7 @@ class LightGTMamba(L.LightningModule):
         # Cosine annealing scheduler
         main_scheduler = CosineAnnealingLR(
             optimizer,
-            T_max=100,  # Total epochs - warmup epochs
+            T_max=self.num_epochs,  # Total epochs - warmup epochs
             eta_min=self.lr * 1e-2  # Minimum LR is 1% of initial LR
         )
 
