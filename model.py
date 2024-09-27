@@ -48,12 +48,14 @@ class LightGTMamba(L.LightningModule):
         elif dataset == 'dodh':
             num_classes = 5
             self.num_vertices = 16
+            self.seq_len = 31
             # for DOD-H
             self.macro_f1 = F1Score(task="multiclass", average="macro", num_classes=num_classes)
             self.cohen_kappa = CohenKappa(task="multiclass", num_classes=num_classes)
         elif dataset == 'bcicha':
             num_classes = 1
             self.num_vertices = 56
+            self.seq_len = 8
             self.accuracy = Accuracy(task="binary")
             self.f1 = F1Score(task="binary")
             self.recall = Recall(task="binary")
