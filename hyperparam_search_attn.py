@@ -68,15 +68,15 @@ def load_data(args):
 def objective(trial, args, datamodule, input_dim, stopping_metric):
     # Suggest hyperparameters
     trial_params = {
-        'num_tgmamba_layers': trial.suggest_int('num_tgmamba_layers', 1, 2, 3),
-        'model_dim': trial.suggest_categorical('model_dim', [32, 50, 100]),
+        'num_tgmamba_layers': trial.suggest_int('num_tgmamba_layers', 1, 3),
+        'model_dim': trial.suggest_categorical('model_dim', [32, 50]),
         'state_expansion_factor': trial.suggest_categorical('state_expansion_factor', [16, 32, 48, 64]),
         'conv_type': 'graphconv', # trial.suggest_categorical('conv_type', ['gcnconv', 'graphconv', 'chebconv', 'gatv2conv']),
         'optimizer_name': 'adamw', # trial.suggest_categorical('optimizer_name', ['adam', 'adamw']),
         'lr_init': trial.suggest_float('lr_init', 1e-7, 2e-3, log=True),
         'weight_decay': trial.suggest_float('weight_decay', 0.01, 0.5, log=True),
         'dropout': trial.suggest_float('dropout', 0.1, 0.5),
-        'edge_learner_attention': trial.suggest_categorical('edge_learner_attention', [True, False]),
+        'edge_learner_attention': True, #trial.suggest_categorical('edge_learner_attention', [True, False]),
         'attn_threshold': trial.suggest_float('attn_threshold', 0.03, 0.3),
         'attn_softmax_temp': trial.suggest_float('attn_softmax_temp', 0.001, 1.0, log=True),
         'seq_pool_type': "Linear", #trial.suggest_categorical('seq_pool_type', ['last', 'mean', 'max']),
@@ -88,7 +88,7 @@ def objective(trial, args, datamodule, input_dim, stopping_metric):
     }
     
     # Initialize WandbLogger
-    with wandb.init(project=f"{args.dataset}-smallgraph-hyperparameter-search", name=f"subject{args.subject}_trial_{trial.number}", config=trial_params, tags=[f"subject_{args.subject}"], reinit=True) as run:
+    with wandb.init(project=f"{args.dataset}-moredata-hyperparameter-search", name=f"linearscar2_agg_trial_{trial.number}", config=trial_params, tags=[f"linear-aggregation"], reinit=True) as run:
         if args.dataset == 'bcicha':
             wandb_logger = WandbLogger(experiment=run, tags=[f"subject_{args.subject}"])    
         else:
@@ -98,8 +98,8 @@ def objective(trial, args, datamodule, input_dim, stopping_metric):
             model = LightGTMamba(
                 dataset=args.dataset,
                 conv_type=trial_params['conv_type'],
-                seq_pool_type=trial_params['seq_pool_type'],
-                vertex_pool_type=trial_params['vertex_pool_type'],
+                # seq_pool_type=trial_params['seq_pool_type'],
+                # vertex_pool_type=trial_params['vertex_pool_type'],
                 input_dim=input_dim,
                 d_model=trial_params['model_dim'],
                 d_state=trial_params['state_expansion_factor'],

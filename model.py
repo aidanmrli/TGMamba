@@ -40,6 +40,7 @@ class LightGTMamba(L.LightningModule):
         if dataset == 'tuhz':
             num_classes = 1
             self.num_vertices = 19
+            self.seq_len = 20
             self.accuracy = Accuracy(task="binary")
             self.f1 = F1Score(task="binary")
             self.recall = Recall(task="binary")
@@ -87,6 +88,8 @@ class LightGTMamba(L.LightningModule):
             ) for _ in range(num_tgmamba_layers)
         ])
         self.dropout = torch.nn.Dropout(dropout)
+        self.seq_aggregator = torch.nn.Linear(self.seq_len, 1)
+        self.node_aggregator = torch.nn.Linear(self.num_vertices, 1)
         self.classifier = torch.nn.Linear(d_model, num_classes) # num_classes = 1 for tuhz or 5 for dodh
 
         # Accumulate validation and test predictions and targets for computing metrics
@@ -130,27 +133,33 @@ class LightGTMamba(L.LightningModule):
             if i < len(self.blocks) - 1:
                 out = self.dropout(out)
         
-        out = out.view(
-            batch, num_vertices, seqlen, -1
-        )  # (B, V, L, d_model)
+        # out.shape = (B*V, L, d_model)
+        # out = out.view(
+        #     batch, num_vertices, seqlen, -1
+        # ) # (B, V, L, d_model)
+        out = out.reshape(
+            batch, -1, num_vertices, seqlen
+        ) # (B, d_model, V, L)
         
         # pooling over the sequence length. consider mean vs max pooling
-        if self.seq_pool_type == 'last':
-            out = out[:, :, -1, :]  # (B, V, d_model)
-        elif self.seq_pool_type == 'mean':
-            out = out.mean(dim=2)
-        elif self.seq_pool_type == 'max':
-            out, _ = out.max(dim=2)
-        else:
-            raise ValueError("Invalid sequence pooling type")
+        out = self.seq_aggregator(out).squeeze(-1)  # (B, d_model, V, L) -> (B, d_model, V)
+        out = self.node_aggregator(out).squeeze(-1)  # (B, d_model, V) -> (B, d_model) 
+        # if self.seq_pool_type == 'last':
+        #     out = out[:, :, -1, :]  # (B, V, d_model)
+        # elif self.seq_pool_type == 'mean':
+        #     out = out.mean(dim=2)
+        # elif self.seq_pool_type == 'max':
+        #     out, _ = out.max(dim=2)
+        # else:
+        #     raise ValueError("Invalid sequence pooling type")
 
         # pool over the vertices. consider mean vs max pooling
-        if self.vertex_pool_type == 'mean':
-            out = out.mean(dim=1)  # (B, d_model)
-        elif self.vertex_pool_type == 'max':
-            out, _ = out.max(dim=1)
-        else:
-            raise ValueError("Invalid vertex pooling type")
+        # if self.vertex_pool_type == 'mean':
+        #     out = out.mean(dim=1)  # (B, d_model)
+        # elif self.vertex_pool_type == 'max':
+        #     out, _ = out.max(dim=1)
+        # else:
+        #     raise ValueError("Invalid vertex pooling type")
 
         out = self.classifier(out)  # (B, 1)
         return out
