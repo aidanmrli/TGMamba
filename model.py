@@ -1,13 +1,47 @@
 import lightning as L
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.data import Data
 import torch.optim as optim
 from mamba_ssm import TGMamba
 from torchmetrics import Accuracy, F1Score, Recall, AUROC, CohenKappa
 from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, CosineAnnealingWarmRestarts, SequentialLR
+from mamba_ssm.ops.triton.layernorm_gated import RMSNorm as RMSNormGated
 
-
+class NodeWiseMultiHeadAttention(nn.Module):
+    def __init__(self, num_vertices, d_model):
+        super().__init__()
+        self.num_vertices = num_vertices
+        self.d_model = d_model
+        self.compress = nn.Linear(self.d_model, self.d_model // 4)
+        self.mha = nn.MultiheadAttention(
+            embed_dim=(self.d_model // 4) * num_vertices,
+            num_heads=num_vertices,
+            batch_first=True
+        )
+        self.reconstruct = nn.Linear(self.d_model // 4, self.d_model)
+        self.norm = RMSNormGated(d_model, eps=1e-5, norm_before_gate=False)
+        
+    def forward(self, x):
+        # x shape: (B*V, L, d_model)
+        batch_size = x.shape[0] // self.num_vertices
+        seq_len = x.shape[1]
+        z = x
+        x = x.view(batch_size, self.num_vertices, seq_len, self.d_model)
+        x = self.compress(x)
+        x = x.permute(0, 2, 1, 3).contiguous().view(batch_size, seq_len, -1)
+        # Apply multi-head attention (B, L, V*d_model) -> (B, L, V*d_model)
+        attn_output, _ = self.mha(x, x, x)
+        # RMSNorm gated
+        
+        attn_output = attn_output.view(batch_size, seq_len, self.num_vertices, -1)
+        attn_output = self.reconstruct(attn_output)
+        attn_output = attn_output.permute(0, 2, 1, 3).contiguous().view(-1, seq_len, self.d_model)
+        attn_output = self.norm(attn_output, z)
+        
+        return attn_output
+    
 class LightGTMamba(L.LightningModule):
     def __init__(self, 
                  dataset='tuhz',
@@ -69,6 +103,23 @@ class LightGTMamba(L.LightningModule):
         self.edge_learner_time_varying = edge_learner_time_varying
         self.pass_edges_to_next_layer = pass_edges_to_next_layer
         self.in_proj = torch.nn.Linear(input_dim, d_model)
+        # self.blocks = torch.nn.ModuleList([
+        #     TGMamba(
+        #         d_model=d_model,
+        #         d_state=d_state,
+        #         d_conv=d_conv,
+        #         expand=2,
+        #         num_vertices=self.num_vertices,
+        #         conv_type=conv_type,
+        #         rmsnorm=self.rmsnorm,
+        #         edge_learner_layers=edge_learner_layers,
+        #         edge_learner_attention=edge_learner_attention,
+        #         edge_learner_time_varying=edge_learner_time_varying, # True
+        #         attn_time_varying=attn_time_varying, # False
+        #         attn_threshold=attn_threshold,
+        #         attn_softmax_temp=attn_softmax_temp,
+        #     ) for _ in range(num_tgmamba_layers)
+        # ])
         self.blocks = torch.nn.ModuleList([
             TGMamba(
                 d_model=d_model,
@@ -84,7 +135,23 @@ class LightGTMamba(L.LightningModule):
                 attn_time_varying=attn_time_varying, # False
                 attn_threshold=attn_threshold,
                 attn_softmax_temp=attn_softmax_temp,
-            ) for _ in range(num_tgmamba_layers)
+            ), 
+            NodeWiseMultiHeadAttention(num_vertices=self.num_vertices, d_model=d_model),
+            TGMamba(
+                d_model=d_model,
+                d_state=d_state,
+                d_conv=d_conv,
+                expand=2,
+                num_vertices=self.num_vertices,
+                conv_type=conv_type,
+                rmsnorm=self.rmsnorm,
+                edge_learner_layers=edge_learner_layers,
+                edge_learner_attention=edge_learner_attention,
+                edge_learner_time_varying=edge_learner_time_varying, # True
+                attn_time_varying=attn_time_varying, # False
+                attn_threshold=attn_threshold,
+                attn_softmax_temp=attn_softmax_temp,
+            ),
         ])
         self.dropout = torch.nn.Dropout(dropout)
         self.classifier = torch.nn.Linear(d_model, num_classes) # num_classes = 1 for tuhz or 5 for dodh
@@ -122,11 +189,14 @@ class LightGTMamba(L.LightningModule):
         assert not torch.isnan(out).any(), "NaN in input data"
         edge_index, edge_weight = data.edge_index, data.edge_weight
         for i, block in enumerate(self.blocks):
-            if self.pass_edges_to_next_layer:
-                out, edge_index, edge_weight = block(out, edge_index, edge_weight)  # (B*V, L, d_model)
-            else:
-                out, _, _ = block(out, edge_index, edge_weight)
-            assert not torch.isnan(out).any(), "NaN in block output at layer {}".format(i)
+            if isinstance(block, TGMamba):
+                if self.pass_edges_to_next_layer:
+                    out, edge_index, edge_weight = block(out, edge_index, edge_weight)
+                else:
+                    out, _, _ = block(out, edge_index, edge_weight)
+            else:  # NodeWiseMultiHeadAttention
+                out = block(out)
+            assert not torch.isnan(out).any(), f"NaN in block output at layer {i}"
             if i < len(self.blocks) - 1:
                 out = self.dropout(out)
         
