@@ -10,7 +10,7 @@ from optuna.visualization import plot_param_importances
 from lightning.pytorch.callbacks import EarlyStopping
 from lightning.pytorch.strategies import DDPStrategy
 from lightning.pytorch.loggers import WandbLogger
-from data import TUHZDataModule, DODHDataModule, BCIchaDataModule
+from data import TUHZDataModule, DODHDataModule, BCIchaDataModule, BCIchaDataset
 import joblib
 import wandb
 import logging
@@ -19,7 +19,7 @@ import sys
 # Import your model and dataset
 from model import LightGTMamba  # Make sure this import works
 DODH_PROCESSED_DATA_DIR='/h/liaidan/TGMamba/data/'
-TUHZ_PROCESSED_DATA_DIR='/h/liaidan/TGMamba/data/tuhz/processed_dataset/'
+TUHZ_PROCESSED_DATA_DIR='/h/liaidan/TGMamba/data/tuhz/new/'
 BCICHA_DATA_DIR='/h/liaidan/TGMamba/data/BCIcha/'
 
 def load_data(args):
@@ -45,15 +45,17 @@ def load_data(args):
         input_dim = 129
         stopping_metric = "val/macro_f1"
     elif args.dataset == 'bcicha':
-        SUBJECT_LIST = [2, 6, 7, 11, 12, 13, 14, 16, 17, 18, 20, 21, 22, 23, 24, 26]
+        SUBJECT_LIST = {2, 6, 7, 11, 12, 13, 14, 16, 17, 18, 20, 21, 22, 23, 24, 26}
+        assert args.subject in SUBJECT_LIST, f"Invalid subject number for BCI Competition IV Dataset 2a. Must be one of {SUBJECT_LIST}"
         datamodule = BCIchaDataModule(
             data_dir=BCICHA_DATA_DIR,
-            subject=12,
+            subject=args.subject,
             batch_size=args.train_batch_size,
             num_workers=args.num_workers,
+            dataset_has_fft=True,
         )
         stopping_metric = "val/auroc"
-        input_dim = 1
+        input_dim = 11
     else:
         raise ValueError(f"Unsupported dataset: {args.dataset}")
 
@@ -64,31 +66,35 @@ def load_data(args):
 def objective(trial, args, datamodule, input_dim, stopping_metric):
     # Suggest hyperparameters
     trial_params = {
-        # 'num_tgmamba_layers': trial.suggest_int('num_tgmamba_layers', 1, 3),
-        'model_dim': trial.suggest_categorical('model_dim', [16, 32, 50]),
-        'state_expansion_factor': trial.suggest_categorical('state_expansion_factor', [16, 32, 48, 64, 128]),
-        # 'conv_type': trial.suggest_categorical('conv_type', ['gcnconv', 'graphconv', 'chebconv', 'gatv2conv']),
-        # 'optimizer_name': trial.suggest_categorical('optimizer_name', ['adam', 'adamw']),
-        'lr_init': trial.suggest_float('lr_init', 1e-5, 2e-3, log=True),
+        'num_tgmamba_layers': trial.suggest_int('num_tgmamba_layers', 1, 2),
+        'model_dim': trial.suggest_categorical('model_dim', [50, 100]),
+        'state_expansion_factor': trial.suggest_categorical('state_expansion_factor', [16, 32, 48, 64]),
+        'conv_type': 'graphconv', # trial.suggest_categorical('conv_type', ['gcnconv', 'graphconv', 'chebconv', 'gatv2conv']),
+        'optimizer_name': 'adamw', # trial.suggest_categorical('optimizer_name', ['adam', 'adamw']),
+        'lr_init': trial.suggest_float('lr_init', 1e-7, 2e-3, log=True),
         'weight_decay': trial.suggest_float('weight_decay', 0.01, 0.5, log=True),
-        # 'edge_learner_attention': trial.suggest_categorical('edge_learner_attention', [True, False]),
-        'attn_threshold': trial.suggest_float('attn_threshold', 0.03, 0.25),
+        'edge_learner_attention': trial.suggest_categorical('edge_learner_attention', [True, False]),
+        'attn_threshold': trial.suggest_float('attn_threshold', 0.03, 0.3),
         'attn_softmax_temp': trial.suggest_float('attn_softmax_temp', 0.001, 1.0, log=True),
         'seq_pool_type': trial.suggest_categorical('seq_pool_type', ['last', 'mean', 'max']),
         'vertex_pool_type': trial.suggest_categorical('vertex_pool_type', ['mean', 'max']),
-        # 'edge_learner_time_varying': trial.suggest_categorical('edge_learner_time_varying', [True, False]),
-        # 'edge_learner_layers': trial.suggest_int('edge_learner_layers', 1, 3),
+        'edge_learner_time_varying': True, # trial.suggest_categorical('edge_learner_time_varying', [True, False]),
+        'edge_learner_layers': 1, # trial.suggest_int('edge_learner_layers', 1, 3),
+        'train_batch_size': args.train_batch_size,
+        'test_batch_size': args.test_batch_size,
     }
     
     # Initialize WandbLogger
-    with wandb.init(project=f"{args.dataset}-patient12-hyperparameter-search-attn", name=f"trial_{trial.number}", config=trial_params, reinit=True) as run:
-        wandb_logger = WandbLogger(experiment=run)    
-
+    with wandb.init(project=f"{args.dataset}-smallgraph-hyperparameter-search", name=f"subject{args.subject}_trial_{trial.number}", config=trial_params, tags=[f"subject_{args.subject}"], reinit=True) as run:
+        if args.dataset == 'bcicha':
+            wandb_logger = WandbLogger(experiment=run, tags=[f"subject_{args.subject}"])    
+        else:
+            wandb_logger = WandbLogger(experiment=run)
         try:
             # Create model
             model = LightGTMamba(
                 dataset=args.dataset,
-                conv_type='graphconv',
+                conv_type=trial_params['conv_type'],
                 seq_pool_type=trial_params['seq_pool_type'],
                 vertex_pool_type=trial_params['vertex_pool_type'],
                 input_dim=input_dim,
@@ -100,9 +106,9 @@ def objective(trial, args, datamodule, input_dim, stopping_metric):
                 lr=trial_params['lr_init'],
                 weight_decay=trial_params['weight_decay'],
                 rmsnorm=True,
-                edge_learner_attention=True,
-                edge_learner_layers=1,
-                edge_learner_time_varying=True,
+                edge_learner_attention=trial_params['edge_learner_attention'],
+                edge_learner_layers=trial_params['edge_learner_layers'],
+                edge_learner_time_varying=trial_params['edge_learner_time_varying'],
                 attn_time_varying=False,
                 attn_softmax_temp=trial_params['attn_softmax_temp'],
                 attn_threshold=trial_params['attn_threshold'],
@@ -146,9 +152,16 @@ def objective(trial, args, datamodule, input_dim, stopping_metric):
 
             return best_val_score
         except Exception as e:
-            print(f"Trial {trial.number} failed due to error: {str(e)}")
-            # Return a very low score to indicate failure
-            return float('-inf')
+            print(f"Trial {trial.number} encountered an error: {str(e)}")
+            
+            # Try to get the best score achieved before the error
+            try:
+                best_val_score = trainer.callback_metrics[stopping_metric].item()
+                print(f"Best {stopping_metric} before error: {best_val_score}")
+                return best_val_score
+            except:
+                print("Could not retrieve a valid score. Returning -inf.")
+                return float('-inf') 
 
 def main(args):
     # Set random seed
@@ -189,10 +202,11 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="TGMamba Hyperparameter Search")
     parser.add_argument('--dataset', type=str, choices=['tuhz', 'dodh', 'bcicha'], required=True, help="Dataset to use for hyperparameter search")
+    parser.add_argument('--subject', type=int, default=2)
     parser.add_argument('--rand_seed', type=int, default=42)
     parser.add_argument('--save_dir', type=str, default='optuna_results/')
-    parser.add_argument('--train_batch_size', type=int, default=6)
-    parser.add_argument('--test_batch_size', type=int, default=6)
+    parser.add_argument('--train_batch_size', type=int, default=40)
+    parser.add_argument('--test_batch_size', type=int, default=40)
     parser.add_argument('--num_workers', type=int, default=12)
     parser.add_argument('--gpu_id', nargs='+', type=int, default=[0], help="GPU IDs to use for training")
     parser.add_argument('--accumulate_grad_batches', type=int, default=1)
