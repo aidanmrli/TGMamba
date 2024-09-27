@@ -11,6 +11,7 @@ from lightning.pytorch.callbacks import EarlyStopping
 from lightning.pytorch.strategies import DDPStrategy
 from lightning.pytorch.loggers import WandbLogger
 from data import TUHZDataModule, DODHDataModule, BCIchaDataModule, BCIchaDataset
+from data import TUHZDataModule, DODHDataModule, BCIchaDataModule, BCIchaDataset
 import joblib
 import wandb
 import logging
@@ -19,6 +20,7 @@ import sys
 # Import your model and dataset
 from model import LightGTMamba  # Make sure this import works
 DODH_PROCESSED_DATA_DIR='/h/liaidan/TGMamba/data/'
+TUHZ_PROCESSED_DATA_DIR='/h/liaidan/TGMamba/data/tuhz/new/'
 TUHZ_PROCESSED_DATA_DIR='/h/liaidan/TGMamba/data/tuhz/new/'
 BCICHA_DATA_DIR='/h/liaidan/TGMamba/data/BCIcha/'
 
@@ -47,14 +49,19 @@ def load_data(args):
     elif args.dataset == 'bcicha':
         SUBJECT_LIST = {2, 6, 7, 11, 12, 13, 14, 16, 17, 18, 20, 21, 22, 23, 24, 26}
         assert args.subject in SUBJECT_LIST, f"Invalid subject number for BCI Competition IV Dataset 2a. Must be one of {SUBJECT_LIST}"
+        SUBJECT_LIST = {2, 6, 7, 11, 12, 13, 14, 16, 17, 18, 20, 21, 22, 23, 24, 26}
+        assert args.subject in SUBJECT_LIST, f"Invalid subject number for BCI Competition IV Dataset 2a. Must be one of {SUBJECT_LIST}"
         datamodule = BCIchaDataModule(
             data_dir=BCICHA_DATA_DIR,
+            subject=args.subject,
             subject=args.subject,
             batch_size=args.train_batch_size,
             num_workers=args.num_workers,
             dataset_has_fft=True,
+            dataset_has_fft=True,
         )
         stopping_metric = "val/auroc"
+        input_dim = 11
         input_dim = 11
     else:
         raise ValueError(f"Unsupported dataset: {args.dataset}")
@@ -82,6 +89,10 @@ def objective(trial, args, datamodule, input_dim, stopping_metric):
         'edge_learner_layers': 1, # trial.suggest_int('edge_learner_layers', 1, 3),
         'train_batch_size': args.train_batch_size,
         'test_batch_size': args.test_batch_size,
+        'edge_learner_time_varying': True, # trial.suggest_categorical('edge_learner_time_varying', [True, False]),
+        'edge_learner_layers': 1, # trial.suggest_int('edge_learner_layers', 1, 3),
+        'train_batch_size': args.train_batch_size,
+        'test_batch_size': args.test_batch_size,
     }
     
     # Initialize WandbLogger
@@ -95,17 +106,22 @@ def objective(trial, args, datamodule, input_dim, stopping_metric):
             model = LightGTMamba(
                 dataset=args.dataset,
                 conv_type=trial_params['conv_type'],
+                conv_type=trial_params['conv_type'],
                 seq_pool_type=trial_params['seq_pool_type'],
                 vertex_pool_type=trial_params['vertex_pool_type'],
                 input_dim=input_dim,
                 d_model=trial_params['model_dim'],
                 d_state=trial_params['state_expansion_factor'],
                 d_conv=4,
-                num_tgmamba_layers=1,
+                num_tgmamba_layers=trial_params['num_tgmamba_layers'],
                 optimizer_name='adamw', # haven't tried this yet,
                 lr=trial_params['lr_init'],
                 weight_decay=trial_params['weight_decay'],
+                dropout=trial_params['dropout'],
                 rmsnorm=True,
+                edge_learner_attention=trial_params['edge_learner_attention'],
+                edge_learner_layers=trial_params['edge_learner_layers'],
+                edge_learner_time_varying=trial_params['edge_learner_time_varying'],
                 edge_learner_attention=trial_params['edge_learner_attention'],
                 edge_learner_layers=trial_params['edge_learner_layers'],
                 edge_learner_time_varying=trial_params['edge_learner_time_varying'],
@@ -162,6 +178,16 @@ def objective(trial, args, datamodule, input_dim, stopping_metric):
             except:
                 print("Could not retrieve a valid score. Returning -inf.")
                 return float('-inf') 
+            print(f"Trial {trial.number} encountered an error: {str(e)}")
+            
+            # Try to get the best score achieved before the error
+            try:
+                best_val_score = trainer.callback_metrics[stopping_metric].item()
+                print(f"Best {stopping_metric} before error: {best_val_score}")
+                return best_val_score
+            except:
+                print("Could not retrieve a valid score. Returning -inf.")
+                return float('-inf') 
 
 def main(args):
     # Set random seed
@@ -203,8 +229,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="TGMamba Hyperparameter Search")
     parser.add_argument('--dataset', type=str, choices=['tuhz', 'dodh', 'bcicha'], required=True, help="Dataset to use for hyperparameter search")
     parser.add_argument('--subject', type=int, default=2)
+    parser.add_argument('--subject', type=int, default=2)
     parser.add_argument('--rand_seed', type=int, default=42)
     parser.add_argument('--save_dir', type=str, default='optuna_results/')
+    parser.add_argument('--train_batch_size', type=int, default=40)
+    parser.add_argument('--test_batch_size', type=int, default=40)
     parser.add_argument('--train_batch_size', type=int, default=40)
     parser.add_argument('--test_batch_size', type=int, default=40)
     parser.add_argument('--num_workers', type=int, default=12)

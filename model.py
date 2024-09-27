@@ -22,6 +22,7 @@ class LightGTMamba(L.LightningModule):
                  optimizer_name='adamw', 
                  lr=5e-4,
                  weight_decay=1e-4,
+                 dropout=0.1,
                  num_epochs=100,
                  rmsnorm=True,
                  edge_learner_layers=1,
@@ -85,6 +86,7 @@ class LightGTMamba(L.LightningModule):
                 attn_softmax_temp=attn_softmax_temp,
             ) for _ in range(num_tgmamba_layers)
         ])
+        self.dropout = torch.nn.Dropout(dropout)
         self.classifier = torch.nn.Linear(d_model, num_classes) # num_classes = 1 for tuhz or 5 for dodh
 
         # Accumulate validation and test predictions and targets for computing metrics
@@ -116,16 +118,17 @@ class LightGTMamba(L.LightningModule):
             # want to reshape to torch.Size([256 * 16, 31, 129])
 
         out = self.in_proj(data.x)  # (B*V, L, d_model)
-        assert not torch.isnan(out).any(), "NaN in input data"
         # out = data.x
+        assert not torch.isnan(out).any(), "NaN in input data"
         edge_index, edge_weight = data.edge_index, data.edge_weight
-        for i in range(len(self.blocks)):
-            block = self.blocks[i]
+        for i, block in enumerate(self.blocks):
             if self.pass_edges_to_next_layer:
                 out, edge_index, edge_weight = block(out, edge_index, edge_weight)  # (B*V, L, d_model)
             else:
                 out, _, _ = block(out, edge_index, edge_weight)
             assert not torch.isnan(out).any(), "NaN in block output at layer {}".format(i)
+            if i < len(self.blocks) - 1:
+                out = self.dropout(out)
         
         out = out.view(
             batch, num_vertices, seqlen, -1
@@ -159,6 +162,31 @@ class LightGTMamba(L.LightningModule):
         if self.dataset == 'tuhz' or self.dataset == 'bcicha':
             targets = data.y.type(torch.float32).reshape(-1, 1)
             loss = F.binary_cross_entropy_with_logits(out, targets)
+            # with torch.no_grad():
+            #     probs = torch.sigmoid(out)
+            #     preds = (probs > 0.5).float()
+            #     # Count class occurrences
+            #     pred_class_counts = torch.bincount(preds.long().flatten())
+            #     true_class_counts = torch.bincount(targets.long().flatten())
+
+            #     # Calculate percentages
+            #     pred_total = pred_class_counts.sum().item()
+            #     true_total = true_class_counts.sum().item()
+
+            #     # print(f"Sample raw outputs: {out[:10]}")
+            #     # print(f"Sample probabilities: {probs[:10]}")
+            #     # print(f"Sample predictions: {preds[:10]}")
+            #     # print(f"Sample true labels: {targets[:10]}")
+                
+            #     print("\nPredicted class balance:")
+            #     for i, count in enumerate(pred_class_counts):
+            #         percentage = (count.item() / pred_total) * 100
+            #         print(f"Class {i}: {count.item()} ({percentage:.2f}%)")
+
+            #     print("\nTrue class balance:")
+            #     for i, count in enumerate(true_class_counts):
+            #         percentage = (count.item() / true_total) * 100
+            #         print(f"Class {i}: {count.item()} ({percentage:.2f}%)")
             
             log_dict = {
                 "train/loss": loss,
