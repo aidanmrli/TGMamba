@@ -49,19 +49,14 @@ def load_data(args):
     elif args.dataset == 'bcicha':
         SUBJECT_LIST = {2, 6, 7, 11, 12, 13, 14, 16, 17, 18, 20, 21, 22, 23, 24, 26}
         assert args.subject in SUBJECT_LIST, f"Invalid subject number for BCI Competition IV Dataset 2a. Must be one of {SUBJECT_LIST}"
-        SUBJECT_LIST = {2, 6, 7, 11, 12, 13, 14, 16, 17, 18, 20, 21, 22, 23, 24, 26}
-        assert args.subject in SUBJECT_LIST, f"Invalid subject number for BCI Competition IV Dataset 2a. Must be one of {SUBJECT_LIST}"
         datamodule = BCIchaDataModule(
             data_dir=BCICHA_DATA_DIR,
-            subject=args.subject,
             subject=args.subject,
             batch_size=args.train_batch_size,
             num_workers=args.num_workers,
             dataset_has_fft=True,
-            dataset_has_fft=True,
         )
         stopping_metric = "val/auroc"
-        input_dim = 11
         input_dim = 11
     else:
         raise ValueError(f"Unsupported dataset: {args.dataset}")
@@ -73,22 +68,19 @@ def load_data(args):
 def objective(trial, args, datamodule, input_dim, stopping_metric):
     # Suggest hyperparameters
     trial_params = {
-        'num_tgmamba_layers': trial.suggest_int('num_tgmamba_layers', 1, 2),
-        'model_dim': trial.suggest_categorical('model_dim', [50, 100]),
+        'num_tgmamba_layers': trial.suggest_int('num_tgmamba_layers', 1, 2, 3),
+        'model_dim': trial.suggest_categorical('model_dim', [32, 50, 100]),
         'state_expansion_factor': trial.suggest_categorical('state_expansion_factor', [16, 32, 48, 64]),
         'conv_type': 'graphconv', # trial.suggest_categorical('conv_type', ['gcnconv', 'graphconv', 'chebconv', 'gatv2conv']),
         'optimizer_name': 'adamw', # trial.suggest_categorical('optimizer_name', ['adam', 'adamw']),
         'lr_init': trial.suggest_float('lr_init', 1e-7, 2e-3, log=True),
         'weight_decay': trial.suggest_float('weight_decay', 0.01, 0.5, log=True),
+        'dropout': trial.suggest_float('dropout', 0.1, 0.5),
         'edge_learner_attention': trial.suggest_categorical('edge_learner_attention', [True, False]),
         'attn_threshold': trial.suggest_float('attn_threshold', 0.03, 0.3),
         'attn_softmax_temp': trial.suggest_float('attn_softmax_temp', 0.001, 1.0, log=True),
-        'seq_pool_type': trial.suggest_categorical('seq_pool_type', ['last', 'mean', 'max']),
-        'vertex_pool_type': trial.suggest_categorical('vertex_pool_type', ['mean', 'max']),
-        'edge_learner_time_varying': True, # trial.suggest_categorical('edge_learner_time_varying', [True, False]),
-        'edge_learner_layers': 1, # trial.suggest_int('edge_learner_layers', 1, 3),
-        'train_batch_size': args.train_batch_size,
-        'test_batch_size': args.test_batch_size,
+        'seq_pool_type': "Linear", #trial.suggest_categorical('seq_pool_type', ['last', 'mean', 'max']),
+        'vertex_pool_type': "Linear", #trial.suggest_categorical('vertex_pool_type', ['mean', 'max']),
         'edge_learner_time_varying': True, # trial.suggest_categorical('edge_learner_time_varying', [True, False]),
         'edge_learner_layers': 1, # trial.suggest_int('edge_learner_layers', 1, 3),
         'train_batch_size': args.train_batch_size,
@@ -106,7 +98,6 @@ def objective(trial, args, datamodule, input_dim, stopping_metric):
             model = LightGTMamba(
                 dataset=args.dataset,
                 conv_type=trial_params['conv_type'],
-                conv_type=trial_params['conv_type'],
                 seq_pool_type=trial_params['seq_pool_type'],
                 vertex_pool_type=trial_params['vertex_pool_type'],
                 input_dim=input_dim,
@@ -119,9 +110,6 @@ def objective(trial, args, datamodule, input_dim, stopping_metric):
                 weight_decay=trial_params['weight_decay'],
                 dropout=trial_params['dropout'],
                 rmsnorm=True,
-                edge_learner_attention=trial_params['edge_learner_attention'],
-                edge_learner_layers=trial_params['edge_learner_layers'],
-                edge_learner_time_varying=trial_params['edge_learner_time_varying'],
                 edge_learner_attention=trial_params['edge_learner_attention'],
                 edge_learner_layers=trial_params['edge_learner_layers'],
                 edge_learner_time_varying=trial_params['edge_learner_time_varying'],
@@ -178,17 +166,7 @@ def objective(trial, args, datamodule, input_dim, stopping_metric):
             except:
                 print("Could not retrieve a valid score. Returning -inf.")
                 return float('-inf') 
-            print(f"Trial {trial.number} encountered an error: {str(e)}")
             
-            # Try to get the best score achieved before the error
-            try:
-                best_val_score = trainer.callback_metrics[stopping_metric].item()
-                print(f"Best {stopping_metric} before error: {best_val_score}")
-                return best_val_score
-            except:
-                print("Could not retrieve a valid score. Returning -inf.")
-                return float('-inf') 
-
 def main(args):
     # Set random seed
     L.seed_everything(args.rand_seed, workers=True)
@@ -229,11 +207,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="TGMamba Hyperparameter Search")
     parser.add_argument('--dataset', type=str, choices=['tuhz', 'dodh', 'bcicha'], required=True, help="Dataset to use for hyperparameter search")
     parser.add_argument('--subject', type=int, default=2)
-    parser.add_argument('--subject', type=int, default=2)
     parser.add_argument('--rand_seed', type=int, default=42)
     parser.add_argument('--save_dir', type=str, default='optuna_results/')
-    parser.add_argument('--train_batch_size', type=int, default=40)
-    parser.add_argument('--test_batch_size', type=int, default=40)
     parser.add_argument('--train_batch_size', type=int, default=40)
     parser.add_argument('--test_batch_size', type=int, default=40)
     parser.add_argument('--num_workers', type=int, default=12)
