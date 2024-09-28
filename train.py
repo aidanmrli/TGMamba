@@ -9,12 +9,14 @@ from torch_geometric.loader import DataLoader
 from model import LightGTMamba
 import argparse
 from pytorch_lightning.loggers import WandbLogger
-from data import DODHDataModule, TUHZDataModule, BCIchaDataModule, BCIchaDataset
+from data import DODHDataModule, TUHZDataModule, BCIchaDataModule, BCIchaDataset, MAMEMDataModule, MAMEMDataset
 
 DODH_RAW_DATA_DIR='/home/amli/dreem-learning-open/data/h5/dodh/'
 DODH_PROCESSED_DATA_DIR='/home/amli/TGMamba/data/'
 TUHZ_DATA_DIR='/home/amli/TGMamba/data/tuhz/processed_dataset/'
 BCICHA_DATA_DIR='/home/amli/TGMamba/data/BCIcha/'
+MAMEM_DATA_DIR='/home/amli/MAtt/data/MAMEM/'
+
 
 def main(args):
     # Set random seed
@@ -62,6 +64,18 @@ def main(args):
         stopping_callback_metric = "val/auroc"
         input_dim = 11 if args.dataset_has_fft else 1
         project_name_suffix = "_bcicha"
+    elif args.dataset == 'mamem':
+        SUBJECT_LIST = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+        datamodule = MAMEMDataModule(
+            data_dir=MAMEM_DATA_DIR,
+            subject=args.subject,
+            batch_size=args.train_batch_size,
+            num_workers=args.num_workers,
+            # dataset_has_fft = args.dataset_has_fft
+        )
+        stopping_callback_metric = "val/accuracy"
+        input_dim = 1
+        project_name_suffix = "_mamem"
         
     # Prepare the data
     datamodule.prepare_data()

@@ -10,8 +10,7 @@ from optuna.visualization import plot_param_importances
 from lightning.pytorch.callbacks import EarlyStopping
 from lightning.pytorch.strategies import DDPStrategy
 from lightning.pytorch.loggers import WandbLogger
-from data import TUHZDataModule, DODHDataModule, BCIchaDataModule, BCIchaDataset
-from data import TUHZDataModule, DODHDataModule, BCIchaDataModule, BCIchaDataset
+from data import TUHZDataModule, DODHDataModule, BCIchaDataModule, BCIchaDataset, MAMEMDataModule, MAMEMDataset
 import joblib
 import wandb
 import logging
@@ -19,10 +18,10 @@ import sys
 
 # Import your model and dataset
 from model import LightGTMamba  # Make sure this import works
-DODH_PROCESSED_DATA_DIR='/h/liaidan/TGMamba/data/'
-TUHZ_PROCESSED_DATA_DIR='/h/liaidan/TGMamba/data/tuhz/new/'
-TUHZ_PROCESSED_DATA_DIR='/h/liaidan/TGMamba/data/tuhz/new/'
-BCICHA_DATA_DIR='/h/liaidan/TGMamba/data/BCIcha/'
+DODH_PROCESSED_DATA_DIR='/home/amli/TGMamba/data/'
+TUHZ_PROCESSED_DATA_DIR='/home/amli/TGMamba/data/tuhz/new/'
+BCICHA_DATA_DIR='/home/amli/TGMamba/data/BCIcha/'
+MAMEM_DATA_DIR='/home/amli/MAtt/data/MAMEM/'
 
 def load_data(args):
     if args.dataset == 'tuhz':
@@ -58,6 +57,17 @@ def load_data(args):
         )
         stopping_metric = "val/auroc"
         input_dim = 11
+    elif args.dataset == 'mamem':
+        SUBJECT_LIST = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}
+        assert args.subject in SUBJECT_LIST, f"Invalid subject number for MAMEM. Must be one of {SUBJECT_LIST}"
+        datamodule = MAMEMDataModule(
+            data_dir=MAMEM_DATA_DIR,
+            subject=args.subject,
+            batch_size=args.train_batch_size,
+            num_workers=args.num_workers,
+        )
+        stopping_metric = "val/accuracy"
+        input_dim = 1
     else:
         raise ValueError(f"Unsupported dataset: {args.dataset}")
 
@@ -68,28 +78,29 @@ def load_data(args):
 def objective(trial, args, datamodule, input_dim, stopping_metric):
     # Suggest hyperparameters
     trial_params = {
-        'num_tgmamba_layers': trial.suggest_int('num_tgmamba_layers', 1, 2, 3),
-        'model_dim': trial.suggest_categorical('model_dim', [32, 50, 100]),
+        'num_tgmamba_layers': 1, # trial.suggest_int('num_tgmamba_layers', 1, 2, 3),
+        'model_dim': trial.suggest_categorical('model_dim', [32, 50]),
         'state_expansion_factor': trial.suggest_categorical('state_expansion_factor', [16, 32, 48, 64]),
         'conv_type': 'graphconv', # trial.suggest_categorical('conv_type', ['gcnconv', 'graphconv', 'chebconv', 'gatv2conv']),
         'optimizer_name': 'adamw', # trial.suggest_categorical('optimizer_name', ['adam', 'adamw']),
         'lr_init': trial.suggest_float('lr_init', 1e-7, 2e-3, log=True),
         'weight_decay': trial.suggest_float('weight_decay', 0.01, 0.5, log=True),
-        'dropout': trial.suggest_float('dropout', 0.1, 0.5),
-        'edge_learner_attention': trial.suggest_categorical('edge_learner_attention', [True, False]),
-        'attn_threshold': trial.suggest_float('attn_threshold', 0.03, 0.3),
-        'attn_softmax_temp': trial.suggest_float('attn_softmax_temp', 0.001, 1.0, log=True),
-        'seq_pool_type': "Linear", #trial.suggest_categorical('seq_pool_type', ['last', 'mean', 'max']),
-        'vertex_pool_type': "Linear", #trial.suggest_categorical('vertex_pool_type', ['mean', 'max']),
-        'edge_learner_time_varying': True, # trial.suggest_categorical('edge_learner_time_varying', [True, False]),
+        'dropout': 0.1, # trial.suggest_float('dropout', 0.1, 0.5),
+        'edge_learner_attention': False, #trial.suggest_categorical('edge_learner_attention', [True, False]),
+        'attn_threshold': 0.1,# trial.suggest_float('attn_threshold', 0.03, 0.3),
+        'attn_softmax_temp': 0.1,# trial.suggest_float('attn_softmax_temp', 0.001, 1.0, log=True),
+        'init_skip_param': trial.suggest_float('init_skip_param', 0.001, 1.0),
+        'seq_pool_type': trial.suggest_categorical('seq_pool_type', ['last', 'mean', 'max']),
+        'vertex_pool_type': trial.suggest_categorical('vertex_pool_type', ['mean', 'max']),
+        'edge_learner_time_varying': True, #trial.suggest_categorical('edge_learner_time_varying', [True, False]),
         'edge_learner_layers': 1, # trial.suggest_int('edge_learner_layers', 1, 3),
         'train_batch_size': args.train_batch_size,
         'test_batch_size': args.test_batch_size,
     }
     
     # Initialize WandbLogger
-    with wandb.init(project=f"{args.dataset}-smallgraph-hyperparameter-search", name=f"subject{args.subject}_trial_{trial.number}", config=trial_params, tags=[f"subject_{args.subject}"], reinit=True) as run:
-        if args.dataset == 'bcicha':
+    with wandb.init(project=f"{args.dataset}-hyperparameter-search", name=f"trial_{trial.number}", config=trial_params, tags=[f"subject_{args.subject}"], reinit=True) as run:
+        if args.dataset == 'bcicha' or args.dataset == 'mamem':
             wandb_logger = WandbLogger(experiment=run, tags=[f"subject_{args.subject}"])    
         else:
             wandb_logger = WandbLogger(experiment=run)
@@ -136,7 +147,7 @@ def objective(trial, args, datamodule, input_dim, stopping_metric):
                 callbacks=[early_stop_callback, pruning_callback],
                 max_epochs=50,
                 accelerator="gpu",
-                devices=1,  # Use GPUs 3 and 4 (index 2 and 3)
+                devices=[4],  # Use GPUs 3 and 4 (index 2 and 3)
                 # strategy="ddp",  # Enable DDP for multi-GPU training
                 accumulate_grad_batches=args.accumulate_grad_batches,
                 enable_progress_bar=True,
@@ -205,7 +216,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="TGMamba Hyperparameter Search")
-    parser.add_argument('--dataset', type=str, choices=['tuhz', 'dodh', 'bcicha'], required=True, help="Dataset to use for hyperparameter search")
+    parser.add_argument('--dataset', type=str, choices=['tuhz', 'dodh', 'bcicha', 'mamem'], required=True, help="Dataset to use for hyperparameter search")
     parser.add_argument('--subject', type=int, default=2)
     parser.add_argument('--rand_seed', type=int, default=42)
     parser.add_argument('--save_dir', type=str, default='optuna_results/')

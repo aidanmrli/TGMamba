@@ -18,7 +18,8 @@ class EdgeLearner(nn.Module):
                  edge_learner_time_varying=True,
                  attn_time_varying=False,
                  attention_threshold=0.1, 
-                 temperature=0.01):
+                 temperature=0.01,
+                 init_skip_param=0.25):
         super().__init__()
         self.d_model = d_model
         self.num_vertices = num_vertices
@@ -37,21 +38,14 @@ class EdgeLearner(nn.Module):
             self.softmax_temperature = temperature
 
         if edge_learner_time_varying and not attn_time_varying:
-            if num_linear_layers == 1:
-                self.edge_transform = nn.Linear(1, 1)
-            else:
-                layers = []
-                for i in range(num_linear_layers):
-                    if i == 0:
-                        layers.append(nn.Linear(1, 8))
-                    elif i == num_linear_layers - 1:
-                        layers.append(nn.Linear(8, 1))
-                    else:
-                        layers.append(nn.Linear(8, 8))
-                    if i < num_linear_layers - 1:
-                        layers.append(self.act)
-                self.edge_transform = nn.Sequential(*layers)
-            self.skip_param = nn.Parameter(torch.tensor(0.95))   # if 1.0, use original edge weights, if 0.0, use learned edge weights
+            self.edge_transform = nn.Sequential(
+                nn.Linear(d_model * 2 + 1, d_model),  # 2 * d_model for pair of nodes, +1 for original edge weight
+                self.act,
+                nn.Linear(d_model, d_model // 2),
+                self.act,
+                nn.Linear(d_model // 2, 1)
+            )
+            self.skip_param = nn.Parameter(torch.tensor(init_skip_param))   # if 1.0, use original edge weights, if 0.0, use learned edge weights
 
     def forward(self, hidden_states, edge_index, edge_weight):
         """
@@ -64,6 +58,7 @@ class EdgeLearner(nn.Module):
         """
         batch_size = hidden_states.size(0) // self.num_vertices
         seq_len = hidden_states.size(1)
+        d_model = hidden_states.size(-1)
         batch_adj_mat = None
         # means we only have edges for each item in the batch, not for each time step
         if edge_weight is not None and edge_weight.dim() < 2: # should always be true
@@ -178,14 +173,39 @@ class EdgeLearner(nn.Module):
                 # edge_index should now have shape (2, batch_size * num_edges, seq_len)
                 # edge_weight should now have shape (batch_size * num_edges, seq_len)
 
-        if self.edge_learner_time_varying or not self.use_attention:
-            edge_weight = edge_weight.unsqueeze(-1)  # Add dimension for linear transform
-            dynamic_edge_weight = self.edge_transform(edge_weight)
-            dynamic_edge_weight = torch.sigmoid(dynamic_edge_weight)
-            edge_weight = self.skip_param * edge_weight + (1 - self.skip_param) * dynamic_edge_weight
-            edge_weight = edge_weight.squeeze(-1)  # Remove added dimension
+        if self.edge_learner_time_varying and not self.attn_time_varying:
+            new_edge_weights = []
+            for t in range(seq_len):
+                # (batch_size * num_vertices, seq_len, d_model)
+                hidden_states_t = hidden_states[:, t, :].view(batch_size, self.num_vertices, d_model)    # (batch_size, num_vertices, d_model)
+                edge_index_t = edge_index[:, :, t].reshape(2, batch_size, -1)  # (2, batch_size, num_edges)
+                edge_weight_t = edge_weight[:, t].view(batch_size, -1)   # (batch_size, num_edges)
+                
+                source_nodes = edge_index_t[0, :, :] % 19 # (batch_size, num_edges)
+                target_nodes = edge_index_t[1, :, :] % 19 # (batch_size, num_edges)
+                # print("hidden_states_t shape: ", hidden_states_t.size())
+                batch_indices = torch.arange(batch_size, device=hidden_states_t.device)[:, None].expand(-1, 72)
+
+                source_nodes_features = hidden_states_t[batch_indices, source_nodes]  # (batch_size, num_edges, d_model)
+                target_nodes_features = hidden_states_t[batch_indices, target_nodes]  # (batch_size, num_edges, d_model)
+                # print("source_nodes_features shape: ", source_nodes_features.size())
+                # print("edge_weight_t shape: ", edge_weight_t.size())
+                # Concatenate features and edge weights
+                input_features = torch.cat([
+                    source_nodes_features, 
+                    target_nodes_features, 
+                    edge_weight_t.unsqueeze(-1)
+                ], dim=-1)  # (batch_size, num_edges, 2 * d_model + 1)
+                
+                edge_weights_t = self.edge_transform(input_features)  # (batch_size, num_edges, 1)
+                edge_weights_t = torch.sigmoid(edge_weights_t) # (batch_size, num_edges, 1)
+                
+                new_edge_weight_t = self.skip_param * edge_weight_t + (1 - self.skip_param) * edge_weights_t.squeeze(-1)  # (batch_size, num_edges)
+                new_edge_weights.append(new_edge_weight_t)
+            
             # edge_index should now have shape (2, batch_size * num_edges, seq_len)
             # edge_weight should now have shape (batch_size * num_edges, seq_len)
+            edge_weight = torch.stack(new_edge_weights, dim=-1).view(-1, seq_len)
 
         if edge_weight.dim() < 2:
             edge_index = repeat(edge_index, 'c b -> c b l', c=2, l=seq_len)

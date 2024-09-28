@@ -31,6 +31,7 @@ class LightGTMamba(L.LightningModule):
                  attn_time_varying=False,
                  attn_threshold=0.1,
                  attn_softmax_temp=0.01,
+                 init_skip_param=0.25,
                  pass_edges_to_next_layer=False,
                  **kwargs):
         super().__init__()
@@ -57,6 +58,13 @@ class LightGTMamba(L.LightningModule):
             self.f1 = F1Score(task="binary")
             self.recall = Recall(task="binary")
             self.auroc = AUROC(task="binary")
+        elif dataset == 'mamem':
+            num_classes = 5
+            self.num_vertices = 8
+            self.accuracy = Accuracy(task="multiclass", num_classes=num_classes)
+            self.f1 = F1Score(task="multiclass", num_classes=num_classes)
+            self.recall = Recall(task="multiclass", num_classes=num_classes)
+
         self.seq_pool_type = seq_pool_type
         self.vertex_pool_type = vertex_pool_type
         self.lr = lr
@@ -84,6 +92,7 @@ class LightGTMamba(L.LightningModule):
                 attn_time_varying=attn_time_varying, # False
                 attn_threshold=attn_threshold,
                 attn_softmax_temp=attn_softmax_temp,
+                init_skip_param=init_skip_param,
             ) for _ in range(num_tgmamba_layers)
         ])
         self.dropout = torch.nn.Dropout(dropout)
@@ -106,7 +115,7 @@ class LightGTMamba(L.LightningModule):
         # print("data.x.size(): ", data.x.size())
         num_vertices = self.num_vertices
         batch, seqlen = None, None
-        if self.dataset == 'tuhz' or self.dataset == 'bcicha':
+        if self.dataset == 'tuhz' or self.dataset == 'bcicha' or self.dataset == 'mamem':
             batch, seqlen, _ = data.x.size()
             batch = batch // num_vertices
         elif self.dataset == 'dodh':
@@ -191,7 +200,7 @@ class LightGTMamba(L.LightningModule):
             log_dict = {
                 "train/loss": loss,
             }
-        elif self.dataset == 'dodh':
+        elif self.dataset == 'dodh' or self.dataset == 'mamem':
             targets = data.y
             loss = F.cross_entropy(out, targets)
 
@@ -222,7 +231,7 @@ class LightGTMamba(L.LightningModule):
             log_dict = {
                 "val/loss": loss,
             }
-        elif self.dataset == 'dodh':
+        elif self.dataset == 'dodh' or self.dataset == 'mamem':
             targets = data.y
             loss = F.cross_entropy(out, targets)
             probs = torch.softmax(out, dim=-1)
@@ -260,7 +269,7 @@ class LightGTMamba(L.LightningModule):
             log_dict = {
                 "test/loss": loss,
             }
-        elif self.dataset == 'dodh':
+        elif self.dataset == 'dodh' or self.dataset == 'mamem':
             targets = data.y
             loss = F.cross_entropy(out, targets)
             probs = torch.softmax(out, dim=-1)
@@ -301,7 +310,21 @@ class LightGTMamba(L.LightningModule):
             self.f1.reset()
             self.auroc.reset()
             self.recall.reset()
-            
+        elif self.dataset == 'mamem':
+            preds, targets = torch.cat(self.val_preds), torch.cat(self.val_targets)
+            accuracy = self.accuracy(preds, targets)
+            f1 = self.f1(preds, targets)
+            recall = self.recall(preds, targets)
+            self.log_dict({
+                "val/f1": f1,
+                "val/recall": recall,
+                "val/accuracy": accuracy,
+            }, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+            self.val_preds = []
+            self.val_targets = []
+            self.accuracy.reset()
+            self.f1.reset()
+            self.recall.reset()
         elif self.dataset == 'dodh':
             preds, targets = torch.cat(self.val_preds), torch.cat(self.val_targets)
             macro_f1 = self.macro_f1(preds, targets)
@@ -337,6 +360,21 @@ class LightGTMamba(L.LightningModule):
             self.accuracy.reset()
             self.f1.reset()
             self.auroc.reset()
+            self.recall.reset()
+        elif self.dataset == 'mamem':
+            preds, targets = torch.cat(self.test_preds), torch.cat(self.test_targets)
+            accuracy = self.accuracy(preds, targets)
+            f1 = self.f1(preds, targets)
+            recall = self.recall(preds, targets)
+            self.log_dict({
+                "test/f1": f1,
+                "test/recall": recall,
+                "test/accuracy": accuracy,
+            }, on_step=False, on_epoch=True, prog_bar=True, logger=True, sync_dist=True)
+            self.test_preds = []
+            self.test_targets = []
+            self.accuracy.reset()
+            self.f1.reset()
             self.recall.reset()
         elif self.dataset == 'dodh':
             preds, targets = torch.cat(self.test_preds), torch.cat(self.test_targets)

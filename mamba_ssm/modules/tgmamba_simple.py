@@ -60,6 +60,7 @@ class TGMamba(nn.Module):
         attn_time_varying=False,
         attn_threshold=0.1,
         attn_softmax_temp=0.01,
+        init_skip_param=0.25,
     ):
         factory_kwargs = {"device": device, "dtype": dtype}
         super().__init__()
@@ -82,7 +83,8 @@ class TGMamba(nn.Module):
                                         edge_learner_time_varying=edge_learner_time_varying,
                                         attn_time_varying=attn_time_varying,
                                         attention_threshold=attn_threshold,
-                                        temperature=attn_softmax_temp)
+                                        temperature=attn_softmax_temp,
+                                        init_skip_param=init_skip_param)
         if edge_learner_time_varying and edge_learner_attention:
             self.time_varying_attention = True
         else: 
