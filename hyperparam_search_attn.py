@@ -78,14 +78,14 @@ def load_data(args):
 def objective(trial, args, datamodule, input_dim, stopping_metric):
     # Suggest hyperparameters
     trial_params = {
-        'num_tgmamba_layers': 1, # trial.suggest_int('num_tgmamba_layers', 1, 2, 3),
+        'num_tgmamba_layers': trial.suggest_int('num_tgmamba_layers', 2, 3),
         'model_dim': trial.suggest_categorical('model_dim', [32, 50]),
         'state_expansion_factor': trial.suggest_categorical('state_expansion_factor', [16, 32, 48, 64]),
         'conv_type': 'graphconv', # trial.suggest_categorical('conv_type', ['gcnconv', 'graphconv', 'chebconv', 'gatv2conv']),
         'optimizer_name': 'adamw', # trial.suggest_categorical('optimizer_name', ['adam', 'adamw']),
         'lr_init': trial.suggest_float('lr_init', 1e-7, 2e-3, log=True),
         'weight_decay': trial.suggest_float('weight_decay', 0.01, 0.5, log=True),
-        'dropout': 0.1, # trial.suggest_float('dropout', 0.1, 0.5),
+        'dropout': trial.suggest_float('dropout', 0.1, 0.5),
         'edge_learner_attention': False, #trial.suggest_categorical('edge_learner_attention', [True, False]),
         'attn_threshold': 0.1,# trial.suggest_float('attn_threshold', 0.03, 0.3),
         'attn_softmax_temp': 0.1,# trial.suggest_float('attn_softmax_temp', 0.001, 1.0, log=True),
@@ -93,13 +93,13 @@ def objective(trial, args, datamodule, input_dim, stopping_metric):
         'seq_pool_type': trial.suggest_categorical('seq_pool_type', ['last', 'mean', 'max']),
         'vertex_pool_type': trial.suggest_categorical('vertex_pool_type', ['mean', 'max']),
         'edge_learner_time_varying': True, #trial.suggest_categorical('edge_learner_time_varying', [True, False]),
-        'edge_learner_layers': 1, # trial.suggest_int('edge_learner_layers', 1, 3),
+        'edge_learner_layers': 3, # trial.suggest_int('edge_learner_layers', 1, 3),
         'train_batch_size': args.train_batch_size,
         'test_batch_size': args.test_batch_size,
     }
     
     # Initialize WandbLogger
-    with wandb.init(project=f"{args.dataset}-hyperparameter-search", name=f"trial_{trial.number}", config=trial_params, tags=[f"subject_{args.subject}"], reinit=True) as run:
+    with wandb.init(project=f"{args.dataset}-moredata-hyperparameter-search", name=f"scar2-trial_{trial.number}", config=trial_params, tags=[f"timevarying"], reinit=True) as run:
         if args.dataset == 'bcicha' or args.dataset == 'mamem':
             wandb_logger = WandbLogger(experiment=run, tags=[f"subject_{args.subject}"])    
         else:
@@ -120,6 +120,7 @@ def objective(trial, args, datamodule, input_dim, stopping_metric):
                 lr=trial_params['lr_init'],
                 weight_decay=trial_params['weight_decay'],
                 dropout=trial_params['dropout'],
+                init_skip_param=trial_params['init_skip_param'],
                 rmsnorm=True,
                 edge_learner_attention=trial_params['edge_learner_attention'],
                 edge_learner_layers=trial_params['edge_learner_layers'],
