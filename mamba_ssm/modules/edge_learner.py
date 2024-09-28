@@ -72,14 +72,14 @@ class EdgeLearner(nn.Module):
         # edge_weight should now have shape (batch_size * num_edges, seq_len)
        
         if self.use_attention:
-            hidden_states = hidden_states.view(batch_size, self.num_vertices, seq_len, -1)
+            hidden_states_new = hidden_states.view(batch_size, self.num_vertices, seq_len, -1)
             
             if batch_adj_mat is not None and batch_adj_mat.dim() == 2:
                 batch_adj_mat = batch_adj_mat.unsqueeze(0).expand(batch_size, self.num_vertices, self.num_vertices).contiguous()
            
             if self.attn_time_varying:
-                Q = self.Q_proj(hidden_states)  # (batch_size, num_vertices, seq_len, d_model)
-                K = self.K_proj(hidden_states)  # (batch_size, num_vertices, seq_len, d_model)
+                Q = self.Q_proj(hidden_states_new)  # (batch_size, num_vertices, seq_len, d_model)
+                K = self.K_proj(hidden_states_new)  # (batch_size, num_vertices, seq_len, d_model)
                 attention_scores = torch.einsum('bvld,bwld->bvwl', Q, K) / self.attn_scale
                 attention_scores = F.softmax(attention_scores / self.softmax_temperature, dim=-2)  # (batch_size, num_vertices, num_vertices, seq_len)
                 # attention_scores = F.softmax(attention_scores / self.softmax_temperature, dim=-3)  # (batch_size, num_vertices, num_vertices, seq_len)              
@@ -135,10 +135,10 @@ class EdgeLearner(nn.Module):
                     
             else:
                 # attention_scores = attention_scores.mean(dim=-1)  # (batch_size, num_vertices, num_vertices)
-                hidden_states = hidden_states.mean(dim=2)   # (batch_size, num_vertices, d_model)
-                 
-                Q = self.Q_proj(hidden_states)  # (batch_size, num_vertices, d_model)
-                K = self.K_proj(hidden_states)  # (batch_size, num_vertices, d_model)
+                hidden_states_mean = hidden_states_new.mean(dim=2)   # (batch_size, num_vertices, d_model)
+                hidden_states_mean = hidden_states_mean.mean(dim=0).unsqueeze(0)  # (1, num_vertices, d_model) 
+                Q = self.Q_proj(hidden_states_mean)  # (batch_size, num_vertices, d_model)
+                K = self.K_proj(hidden_states_mean)  # (batch_size, num_vertices, d_model)
                 attention_scores = torch.einsum('bvd,bwd->bvw', Q, K) / self.attn_scale
                 # print("attention scores shape: ", attention_scores.size())
                 # print("attention_scores before softmax ", attention_scores[0, :, :])
@@ -154,7 +154,7 @@ class EdgeLearner(nn.Module):
                 attention_scores = torch.where(attention_scores >= self.attn_threshold, attention_scores, torch.zeros_like(attention_scores))
                 
                 if batch_adj_mat is not None:
-                    assert attention_scores.size() == (batch_size, self.num_vertices, self.num_vertices)
+                    # assert attention_scores.size() == (batch_size, self.num_vertices, self.num_vertices)
                     attention_scores = attention_scores + batch_adj_mat     # skip connection
                 edge_index, edge_weight = dense_to_sparse(attention_scores)
                 
@@ -180,11 +180,11 @@ class EdgeLearner(nn.Module):
                 hidden_states_t = hidden_states[:, t, :].view(batch_size, self.num_vertices, d_model)    # (batch_size, num_vertices, d_model)
                 edge_index_t = edge_index[:, :, t].reshape(2, batch_size, -1)  # (2, batch_size, num_edges)
                 edge_weight_t = edge_weight[:, t].view(batch_size, -1)   # (batch_size, num_edges)
-                
+                num_edges = edge_index_t.size(-1)
                 source_nodes = edge_index_t[0, :, :] % 19 # (batch_size, num_edges)
                 target_nodes = edge_index_t[1, :, :] % 19 # (batch_size, num_edges)
                 # print("hidden_states_t shape: ", hidden_states_t.size())
-                batch_indices = torch.arange(batch_size, device=hidden_states_t.device)[:, None].expand(-1, 72)
+                batch_indices = torch.arange(batch_size, device=hidden_states_t.device)[:, None].expand(-1, num_edges)
 
                 source_nodes_features = hidden_states_t[batch_indices, source_nodes]  # (batch_size, num_edges, d_model)
                 target_nodes_features = hidden_states_t[batch_indices, target_nodes]  # (batch_size, num_edges, d_model)
