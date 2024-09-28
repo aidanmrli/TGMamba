@@ -76,7 +76,7 @@ class TGMamba(nn.Module):
         ################ NEW
         self.rmsnorm = rmsnorm
         self.num_vertices = num_vertices  # Store number of vertices (EEG channels)
-        self.edge_learner = EdgeLearner(d_model, 
+        self.edge_learner = EdgeLearner(self.d_inner, 
                                         num_vertices, 
                                         edge_learner_layers, 
                                         use_attention=edge_learner_attention,
@@ -286,8 +286,8 @@ class TGMamba(nn.Module):
         # print("edge_weight before edge_learner: ", edge_weight)
         # print("edge_weight.shape: ", edge_weight.shape)
         # print("edge_weight.dim: ", edge_weight.dim())
-        # print("\n\n\n")
-        edge_index, edge_weight = self.edge_learner(hidden_states, edge_index, edge_weight)
+        # print("\n\n\n")(BV, d_inner, L)
+        edge_index, edge_weight = self.edge_learner(rearrange(x, "b dinner l -> b l dinner", l=seqlen).contiguous(), edge_index, edge_weight)
         # print("edge_weight after edge_learner: ", edge_weight)
         # print("edge_weight.shape: ", edge_weight.shape)
         # raise SystemExit("Stop here")
