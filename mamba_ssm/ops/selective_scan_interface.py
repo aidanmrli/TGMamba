@@ -40,12 +40,6 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta
     out: Output tensor of shape r(B, D, L)
     last_state (optional): Last state tensor of shape r(B D dstate) or c(B D dstate)
     """
-    # if time_varying_attention:
-    #     edge_mask = (edge_index[0] != -1) & (edge_index[1] != -1)  # Assume -1 was used for padding
-    #     assert edge_mask.shape == edge_weight.shape, "Edge mask and edge weight shape mismatch"
-    #     edge_index = edge_index * edge_mask.unsqueeze(0)
-    #     edge_weight = edge_weight * edge_mask
-    #     assert edge_index.shape[0] == 2, "Edge index should have shape (2, num_edges)"
     dtype_in = u.dtype
     u = u.float()
     batch, input_dim, seqlen = u.shape
@@ -87,15 +81,27 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta
     assert not torch.isnan(u).any(), "NaN in input u"
     if gconv_B is not None:
         # perform the graph convolution on the input u
-        u = u.reshape(-1, input_dim)  # (B*V*L, D)
         # collapse the seqlen dimension into the batch dimension
         # TODO: check if the reshape is being done correctly
         # is this B*V*L or B*L*V? do the edge indices and edge weight correspond to the correct batch item in u?
         # after the first gradient update
-        u = gconv_B(u, edge_index.reshape(2, -1), edge_weight.reshape(-1))  # (B*V*L, D)
-        u = u.view(batch, num_vertices, input_dim, seqlen)  # (B, V, D, L)
+        u_list = []
+        # print("u.shape: ", u.shape)
+        for i in range(seqlen):
+            u_t = u[:, :, i].view(-1, input_dim)  # (B*V, D)
+            # print("i: ", i)
+            # print("u input dim: ", input_dim)
+            # print("dim D from A", dim)
+            # print("u_t.shape before gconv: ", u_t.shape)
+            # print(f"edge_index[:, :, i] shape: {edge_index[:, :, i].shape}")
+            # print(f"edge_weight[:, i] shape: {edge_weight[:, i].shape}")
+            u_t = gconv_B(u_t, edge_index[:, :, i], edge_weight[:, i])  # (B*V, D)
+            # print("u_t.shape after gconv: ", u_t.shape)
+            u_list.append(u_t.view(-1, num_vertices, input_dim))
+        u = torch.stack(u_list, dim=3)  # (B, V, D, L)
         assert not torch.isnan(u).any(), "NaN in input u after B graph convolution"
-        
+    u = u.view(batch, num_vertices, input_dim, seqlen)  # (B, V, D, L)
+    
 
     # Compute deltaB * u, handling different shapes of B
     # B has shape (B*V, N, L) if variable
@@ -123,8 +129,8 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta
         if gconv_A is not None:
             # repeat edge_index .repeat(1, dstate) and edge_weight .repeat(dstate)
             x = gconv_A(rearrange(x, "b v d n -> (b v d) n", n=dstate), edge_index[:, :, i], edge_weight[:, i])  # (B*V*N, D)
-            x = x.view(batch, num_vertices, input_dim, dstate)  # (B, V, D, N)
             assert not torch.isnan(x).any(), "NaN in hidden state x after A graph convolution at time step {}".format(i)
+        x = x.view(batch, num_vertices, input_dim, dstate)  # (B, V, D, N)
 
         # A_t h_t-1 + B_t u_t
         # want (B, V, D, N) + (B, V, D, N)
@@ -139,9 +145,10 @@ def selective_scan_ref(u, delta, A, B, C, D=None, z=None, delta_bias=None, delta
         else:
             if gconv_C is not None:               
                 conv_C = gconv_C(rearrange(x, "b v d n -> (b v d) n", n=dstate), edge_index[:, :, i], edge_weight[:, i])  # (B*V*N, D)
-                conv_C = conv_C.view(batch, num_vertices, input_dim, dstate)  # (B, V, D, N)
                 assert not torch.isnan(conv_C).any(), "NaN in conv_C at time step {}".format(i)
-
+                conv_C = conv_C.view(batch, num_vertices, input_dim, dstate)  # (B, V, D, N)
+            else:
+                conv_C = x.view(batch, num_vertices, input_dim, dstate)  # (B, V, D, N)
             # C has shape (B, V, N, L) if variable
             # want y to have shape (B, V, D)
             if C.dim() == 4:

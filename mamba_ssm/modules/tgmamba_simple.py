@@ -106,7 +106,9 @@ class TGMamba(nn.Module):
             self.gconv_B = GATv2Conv(self.d_inner, self.d_inner, heads=1, concat=False, bias=False)
             self.gconv_C = GATv2Conv(self.d_state, self.d_state, heads=1, concat=False, bias=False)
         else:
-            raise NotImplementedError("Only GCNConv, ChebConv, and GraphConv are supported")
+            self.gconv_A = None
+            self.gconv_B = None
+            self.gconv_C = None
         ################
         
         # weights have shape (output_dim, input_dim). So (d_inner*2, d_model) = (64, 16)

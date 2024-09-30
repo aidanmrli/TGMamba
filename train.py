@@ -13,7 +13,7 @@ from data import DODHDataModule, TUHZDataModule, BCIchaDataModule, BCIchaDataset
 
 DODH_RAW_DATA_DIR='/home/amli/dreem-learning-open/data/h5/dodh/'
 DODH_PROCESSED_DATA_DIR='/home/amli/TGMamba/data/'
-TUHZ_DATA_DIR='/home/amli/TGMamba/data/tuhz/processed_dataset/'
+TUHZ_DATA_DIR='/home/amli/TGMamba/data/tuhz/processed_dataset/old'
 BCICHA_DATA_DIR='/home/amli/TGMamba/data/BCIcha/'
 MAMEM_DATA_DIR='/home/amli/MAtt/data/MAMEM/'
 
@@ -112,10 +112,12 @@ def main(args):
                             d_model=args.model_dim, 
                             d_state=args.state_expansion_factor, 
                             d_conv=args.local_conv_width,
-                            num_tgmamba_layers=args.num_tgmamba_layers, 
+                            num_tgmamba_layers=args.num_tgmamba_layers,
+                            gconv_after_all_layers=args.gconv_after_all_layers, 
                             optimizer_name=args.optimizer_name,
                             lr=args.lr_init,
                             weight_decay=args.weight_decay,
+                            init_skip_param=args.init_skip_param,
                             num_epochs=args.num_epochs,
                             rmsnorm=True,
                             edge_learner_attention=args.edge_learner_attention,
@@ -192,6 +194,7 @@ if __name__ == "__main__":
     parser.add_argument('--state_expansion_factor', type=int, default=32)
     parser.add_argument('--local_conv_width', type=int, default=4)
     parser.add_argument('--num_tgmamba_layers', type=int, default=1)
+    parser.add_argument('--gconv_after_all_layers', action='store_true', help="a single GConv layer after all TGMamba layers")
     parser.add_argument('--rmsnorm', action='store_true', help="Enable RMSNorm in the model")
     parser.add_argument('--edge_learner_layers', type=int, default=1)
     parser.add_argument('--edge_learner_attention', action='store_true', help="Enable attention in the edge learner")
@@ -204,6 +207,7 @@ if __name__ == "__main__":
     parser.add_argument('--num_workers', type=int, default=16)
     parser.add_argument('--lr_init', type=float, default=1e-4)
     parser.add_argument('--weight_decay', type=float, default=0.1)
+    parser.add_argument('--init_skip_param', type=float, default=0.25)
     parser.add_argument('--optimizer_name', type=str, default='adamw')
     parser.add_argument('--scheduler', type=str, default='cosine')
     parser.add_argument('--num_epochs', type=int, default=100)

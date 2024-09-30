@@ -178,7 +178,13 @@ class EdgeLearner(nn.Module):
                 
                 # edge_index should now have shape (2, batch_size * num_edges, seq_len)
                 # edge_weight should now have shape (batch_size * num_edges, seq_len)
-
+        if edge_weight is None and edge_index is None:
+            # identity matrix with self loops
+            adj_mat = torch.eye(self.num_vertices, device=hidden_states.device).unsqueeze(0).expand(batch_size, self.num_vertices, self.num_vertices)
+            edge_index, edge_weight = dense_to_sparse(adj_mat)
+            edge_index = repeat(edge_index, 'c b -> c b l', c=2, l=seq_len)
+            edge_weight = repeat(edge_weight, 'b -> b l', l=seq_len)
+            
         if self.edge_learner_time_varying and not self.attn_time_varying:
             new_edge_weights = []
             for t in range(seq_len):
@@ -216,7 +222,7 @@ class EdgeLearner(nn.Module):
             # edge_index should now have shape (2, batch_size * num_edges, seq_len)
             # edge_weight should now have shape (batch_size * num_edges, seq_len)
             edge_weight = torch.stack(new_edge_weights, dim=-1).view(-1, seq_len)
-
+            
         if edge_weight.dim() < 2:
             edge_index = repeat(edge_index, 'c b -> c b l', c=2, l=seq_len)
             edge_weight = repeat(edge_weight, 'b -> b l', l=seq_len)
@@ -277,20 +283,3 @@ def dense_to_sparse(adj: Tensor) -> Tuple[Tensor, Tensor]:
         row = edge_index[1] + adj.size(-2) * edge_index[0]
         col = edge_index[2] + adj.size(-1) * edge_index[0]
         return torch.stack([row, col], dim=0), edge_attr
-
-# def edge_index_to_adj_matrix(edge_index, edge_weight, num_nodes, batch_size):
-#     # Ensure edge_index and edge_weight are on the same device
-#     device = edge_index.device
-    
-#     # Create a batch vector
-#     batch = torch.arange(batch_size, device=device).repeat_interleave(num_nodes)
-    
-#     # Create a sparse tensor
-#     adj = SparseTensor(row=edge_index[0], col=edge_index[1], value=edge_weight,
-#                        sparse_sizes=(batch_size * num_nodes, batch_size * num_nodes))
-    
-#     # Convert to a dense tensor and reshape
-#     adj_dense = adj.to_dense()
-#     adj_matrix = adj_dense.view(batch_size, num_nodes, num_nodes)
-    
-#     return adj_matrix
