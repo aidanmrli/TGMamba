@@ -156,17 +156,23 @@ class EdgeLearner(nn.Module):
                 if batch_adj_mat is not None:
                     # assert attention_scores.size() == (batch_size, self.num_vertices, self.num_vertices)
                     attention_scores = attention_scores + batch_adj_mat     # skip connection
+                
+                if attention_scores.shape[0] == 1:
+                    attention_scores = attention_scores.repeat(batch_size, 1, 1)
+                
+                for i in range(self.num_vertices):
+                    attention_scores[:, i, i] = 1.0
                 edge_index, edge_weight = dense_to_sparse(attention_scores)
                 
                 # add self-loop
-                edge_index, edge_weight = remove_self_loops(
-                    edge_index=edge_index, edge_attr=edge_weight
-                )
-                edge_index, edge_weight = add_self_loops(
-                    edge_index=edge_index,
-                    edge_attr=edge_weight,
-                    fill_value=1,
-                )   # edge_index is now (2, batch_size * num_edges), edge_weight is now (batch_size * num_edges)
+                # edge_index, edge_weight = remove_self_loops(
+                #     edge_index=edge_index, edge_attr=edge_weight
+                # )
+                # edge_index, edge_weight = add_self_loops(
+                #     edge_index=edge_index,
+                #     edge_attr=edge_weight,
+                #     fill_value=1,
+                # )   # edge_index is now (2, batch_size * num_edges), edge_weight is now (batch_size * num_edges)
                 edge_index = repeat(edge_index, 'c b -> c b l', c=2, l=seq_len)
                 edge_weight = repeat(edge_weight, 'b -> b l', l=seq_len)
                 
@@ -178,11 +184,15 @@ class EdgeLearner(nn.Module):
             for t in range(seq_len):
                 # (batch_size * num_vertices, seq_len, d_model)
                 hidden_states_t = hidden_states[:, t, :].view(batch_size, self.num_vertices, d_model)    # (batch_size, num_vertices, d_model)
-                edge_index_t = edge_index[:, :, t].reshape(2, batch_size, -1)  # (2, batch_size, num_edges)
-                edge_weight_t = edge_weight[:, t].view(batch_size, -1)   # (batch_size, num_edges)
+                try:
+                    edge_index_t = edge_index[:, :, t].reshape(2, batch_size, -1)  # (2, batch_size, num_edges)
+                    edge_weight_t = edge_weight[:, t].view(batch_size, -1)   # (batch_size, num_edges)
+                except Exception:
+                    print("edge_index shape: ", edge_index.size())
+                    print("edge_weight shape: ", edge_weight.size())
                 num_edges = edge_index_t.size(-1)
-                source_nodes = edge_index_t[0, :, :] % 19 # (batch_size, num_edges)
-                target_nodes = edge_index_t[1, :, :] % 19 # (batch_size, num_edges)
+                source_nodes = edge_index_t[0, :, :] % self.num_vertices # (batch_size, num_edges)
+                target_nodes = edge_index_t[1, :, :] % self.num_vertices # (batch_size, num_edges)
                 # print("hidden_states_t shape: ", hidden_states_t.size())
                 batch_indices = torch.arange(batch_size, device=hidden_states_t.device)[:, None].expand(-1, num_edges)
 

@@ -85,10 +85,10 @@ class TGMamba(nn.Module):
                                         attention_threshold=attn_threshold,
                                         temperature=attn_softmax_temp,
                                         init_skip_param=init_skip_param)
-        if edge_learner_time_varying and edge_learner_attention:
-            self.time_varying_attention = True
-        else: 
-            self.time_varying_attention = False
+        # if edge_learner_time_varying and edge_learner_attention:
+        #     self.time_varying_attention = True
+        # else: 
+        self.time_varying_attention = False
         if conv_type == "gcnconv":
             self.gconv_A = GCNConv(self.d_state, self.d_state, bias=False)
             self.gconv_B = GCNConv(self.d_inner, self.d_inner, bias=False)
