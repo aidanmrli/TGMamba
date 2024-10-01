@@ -63,7 +63,7 @@ def spectral_power(signal, signal_properties, frequency_interval=None, stft_dura
                    window='hamming', statistics=None, padding_duration=0):
     N_channels = signal.shape[1]
     fs = signal_properties['fs']
-
+    print("fs", fs)  # 100
     nperseg, noverlap, nperepoch = int(stft_duration * fs), int(stft_overlap * fs), int(
         epoch_duration * fs)
 
@@ -73,7 +73,7 @@ def spectral_power(signal, signal_properties, frequency_interval=None, stft_dura
 
     signal = signal.reshape((N_epoch, nperepoch, N_channels)).transpose(
         (0, 2, 1))  # N_epoch, N_channels , nperepoch
-    # print("signal shape before stft", signal.shape)  # (N_epoch, N_channels, nperepoch) = (3, 16, 3000)
+    print("signal shape before stft", signal.shape)  # (N_epoch, N_channels, nperepoch) = (3, 16, 3000)
     freq, _, signal_stft = stft(signal, fs=fs, window=window, nperseg=nperseg, noverlap=noverlap)
     signal_stft = np.abs(signal_stft)
     # print("freq.shape after stft", freq.shape)

@@ -20,6 +20,6 @@ def combine_dataset_files(input_dir, output_file):
 
 # Run this for each split
 for split in ['train', 'val', 'test']:
-    input_dir = f'/h/liaidan/TGMamba/data/preprocessed_dodh_{split}'
-    output_file = f'/h/liaidan/TGMamba/data/dodh_{split}.pt'
+    input_dir = f'/home/amli/TGMamba/data/preprocessed_dodh_{split}'
+    output_file = f'/home/amli/TGMamba/data/dodh_{split}.pt'
     combine_dataset_files(input_dir, output_file)

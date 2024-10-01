@@ -14,7 +14,7 @@ class TUHZDataModule(LightningDataModule):
     def setup(self, stage=None):
         dataset_suffix = 'fft' if self.dataset_has_fft else 'raw_s4mer_normalized'
         self.train_dataset = torch.load(os.path.join(self.data_dir, f'train_dataset_{dataset_suffix}.pt'))
-        self.val_dataset = torch.load(os.path.join(self.data_dir, f'test_dataset_{dataset_suffix}.pt')) # should be val_dataset
+        self.val_dataset = torch.load(os.path.join(self.data_dir, f'val_dataset_{dataset_suffix}.pt')) 
         self.test_dataset = torch.load(os.path.join(self.data_dir, f'test_dataset_{dataset_suffix}.pt'))
 
     def prepare_data(self):

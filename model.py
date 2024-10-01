@@ -6,7 +6,9 @@ import torch.optim as optim
 from mamba_ssm import TGMamba
 from torchmetrics import Accuracy, F1Score, Recall, AUROC, CohenKappa
 from torch.optim.lr_scheduler import LinearLR, CosineAnnealingLR, CosineAnnealingWarmRestarts, SequentialLR
-
+from torch_geometric.nn import GraphConv
+from einops import repeat
+import time
 
 class LightGTMamba(L.LightningModule):
     def __init__(self, 
@@ -18,7 +20,8 @@ class LightGTMamba(L.LightningModule):
                  d_model=32, 
                  d_state=16, 
                  d_conv=4,
-                 num_tgmamba_layers=2,
+                 num_tgmamba_layers=1,
+                 gconv_after_all_layers=False,
                  optimizer_name='adamw', 
                  lr=5e-4,
                  weight_decay=1e-4,
@@ -96,6 +99,9 @@ class LightGTMamba(L.LightningModule):
             ) for _ in range(num_tgmamba_layers)
         ])
         self.dropout = torch.nn.Dropout(dropout)
+        self.gconv_after_all_layers = gconv_after_all_layers
+        if self.gconv_after_all_layers:
+            self.gconv = GraphConv(d_model, d_model)
         self.classifier = torch.nn.Linear(d_model, num_classes) # num_classes = 1 for tuhz or 5 for dodh
 
         # Accumulate validation and test predictions and targets for computing metrics
@@ -142,6 +148,19 @@ class LightGTMamba(L.LightningModule):
         out = out.view(
             batch, num_vertices, seqlen, -1
         )  # (B, V, L, d_model)
+        
+        if self.gconv_after_all_layers:
+            if edge_weight is None and edge_index is None:
+                node_indices = torch.arange(self.num_vertices, device=out.device)
+                edge_index = torch.cartesian_prod(node_indices, node_indices).t()
+                edge_weight = torch.ones(edge_index.size(1), device=out.device)
+                
+                edge_index = edge_index.repeat(1, batch) + (torch.arange(batch, device=out.device) * self.num_vertices).repeat_interleave(edge_index.size(1))
+                edge_weight = edge_weight.repeat(batch)
+
+            out_reshaped = out.view(-1, out.size(-1))  # (B * V * L, d_model)
+            out_conv = self.gconv(out_reshaped, edge_index, edge_weight)
+            out = out_conv.view(batch, num_vertices, seqlen, -1)  # (B, V, L, d_model)
         
         # pooling over the sequence length. consider mean vs max pooling
         if self.seq_pool_type == 'last':
@@ -348,6 +367,7 @@ class LightGTMamba(L.LightningModule):
             f1 = self.f1(preds, targets)
             auroc = self.auroc(probs, targets)
             recall = self.recall(preds, targets)
+
             self.log_dict({
                 "test/auroc": auroc,
                 "test/f1": f1,
@@ -436,3 +456,51 @@ class LightGTMamba(L.LightningModule):
         # )
         return {"optimizer": optimizer, "lr_scheduler": main_scheduler, "monitor": "val/loss"}
         # return [optimizer], [{"scheduler": scheduler, "interval": "epoch"}]
+        
+        
+
+def dense_to_sparse(adj):
+    r"""Converts a dense adjacency matrix to a sparse adjacency matrix defined
+    by edge indices and edge attributes.
+
+    Args:
+        adj (Tensor): The dense adjacency matrix of shape
+            :obj:`[num_nodes, num_nodes]` or
+            :obj:`[batch_size, num_nodes, num_nodes]`.
+
+    :rtype: (:class:`LongTensor`, :class:`Tensor`)
+
+    Examples:
+
+        >>> # Forr a single adjacency matrix
+        >>> adj = torch.tensor([[3, 1],
+        ...                     [2, 0]])
+        >>> dense_to_sparse(adj)
+        (tensor([[0, 0, 1],
+                [0, 1, 0]]),
+        tensor([3, 1, 2]))
+
+        >>> # For two adjacency matrixes
+        >>> adj = torch.tensor([[[3, 1],
+        ...                      [2, 0]],
+        ...                     [[0, 1],
+        ...                      [0, 2]]])
+        >>> dense_to_sparse(adj)
+        (tensor([[0, 0, 1, 2, 3],
+                [0, 1, 0, 3, 3]]),
+        tensor([3, 1, 2, 1, 2]))
+    """
+    if adj.dim() < 2 or adj.dim() > 3:
+        raise ValueError(f"Dense adjacency matrix 'adj' must be 2- or "
+                         f"3-dimensional (got {adj.dim()} dimensions)")
+
+    edge_index = adj.nonzero().t()
+
+    if edge_index.size(0) == 2:
+        edge_attr = adj[edge_index[0], edge_index[1]]
+        return edge_index, edge_attr
+    else:
+        edge_attr = adj[edge_index[0], edge_index[1], edge_index[2]]
+        row = edge_index[1] + adj.size(-2) * edge_index[0]
+        col = edge_index[2] + adj.size(-1) * edge_index[0]
+        return torch.stack([row, col], dim=0), edge_attr

@@ -109,6 +109,7 @@ class TGMamba(nn.Module):
             self.gconv_A = None
             self.gconv_B = None
             self.gconv_C = None
+            print("NOTE: No graph convolution type specified. Setting gconv_A, gconv_B, gconv_C to None.")
         ################
         
         # weights have shape (output_dim, input_dim). So (d_inner*2, d_model) = (64, 16)

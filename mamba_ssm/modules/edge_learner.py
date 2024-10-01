@@ -180,10 +180,20 @@ class EdgeLearner(nn.Module):
                 # edge_weight should now have shape (batch_size * num_edges, seq_len)
         if edge_weight is None and edge_index is None:
             # identity matrix with self loops
-            adj_mat = torch.eye(self.num_vertices, device=hidden_states.device).unsqueeze(0).expand(batch_size, self.num_vertices, self.num_vertices)
+            adj_mat = torch.rand(self.num_vertices, self.num_vertices, device=hidden_states.device)
+            adj_mat = (adj_mat + adj_mat.t()) / 2
+            adj_mat.fill_diagonal_(1)
+            # Duplicate the adjacency matrix batch_size times
+            adj_mat = adj_mat.unsqueeze(0).expand(batch_size, self.num_vertices, self.num_vertices)
+            
+            # Convert to edge_index and edge_weight
             edge_index, edge_weight = dense_to_sparse(adj_mat)
             edge_index = repeat(edge_index, 'c b -> c b l', c=2, l=seq_len)
             edge_weight = repeat(edge_weight, 'b -> b l', l=seq_len)
+            # adj_mat = torch.eye(self.num_vertices, device=hidden_states.device).unsqueeze(0).expand(batch_size, self.num_vertices, self.num_vertices)
+            # edge_index, edge_weight = dense_to_sparse(adj_mat)
+            # edge_index = repeat(edge_index, 'c b -> c b l', c=2, l=seq_len)
+            # edge_weight = repeat(edge_weight, 'b -> b l', l=seq_len)
             
         if self.edge_learner_time_varying and not self.attn_time_varying:
             new_edge_weights = []

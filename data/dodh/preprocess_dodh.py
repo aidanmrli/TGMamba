@@ -78,10 +78,10 @@ def preprocess_signal(signals, signal_properties):
     np.array: Shape (num_channels, num_frequencies, num_time_steps)
     """
     signals = signals.T
-    # print("Preprocessing raw signal.\nSignal shape before preprocessing:", signals.shape)
+    print("Preprocessing raw signal.\nSignal shape before preprocessing:", signals.shape)
     # 1. Band-pass filter
     filtered_signal, signal_props = signal_processings['filter'](signals, signal_properties)
-    # print("Filtered signal shape:", filtered_signal.shape)
+    print("Filtered signal shape:", filtered_signal.shape)
     # 2. Resample to 100 Hz 
     # this also sets signal_props['fs'] = 100
     resampled_signal, signal_props = signal_processings['resample'](filtered_signal, signal_props, target_frequency=100)
@@ -89,7 +89,7 @@ def preprocess_signal(signals, signal_properties):
     
     # 3. Clip and divide by 500 to remove extreme values
     clipped_signal = np.clip(resampled_signal, -500, 500) / 500
-    # print("Clipped signal shape:", clipped_signal.shape)
+    print("Clipped signal shape:", clipped_signal.shape)
     # 4. Zero-padding
     # padded_signal, signal_props = signal_processings['padding'](clipped_signal, signal_props, padding_duration=30)
     # print("Padded signal shape:", padded_signal.shape)
@@ -104,7 +104,7 @@ def preprocess_signal(signals, signal_properties):
                                                    stft_overlap=1.56, 
                                                    epoch_duration=30
                                                    )
-    # print("STFT shape:", stft_result.shape)
+    print("STFT shape:", stft_result.shape)
     # 6. Log-power and clipping
     log_power = np.log10(np.abs(stft_result)**2 + 1e-10)
     clipped_power = np.clip(log_power, -20, 20)
