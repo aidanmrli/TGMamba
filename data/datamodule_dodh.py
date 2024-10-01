@@ -15,12 +15,12 @@ from torch_geometric.data import InMemoryDataset, Data, Dataset
 from typing import Optional, Callable
 from tqdm import tqdm
 
-from data.epoch_features_processing import epoch_features
-from data.signal_processing import signal_processings
+from data.dodh.epoch_features_processing import epoch_features
+from data.dodh.signal_processing import signal_processings
 
 # from constants import DODH_CHANNELS
 
-DODH_FILEMARKER_DIR = "/home/amli/TGMamba/data/file_markers_dodh"
+DODH_FILEMARKER_DIR = "/home/amli/TGMamba/data/dodh/file_markers_dodh"
 # Dreem DOD-H
 DODH_CHANNELS = [
     "C3_M2",
