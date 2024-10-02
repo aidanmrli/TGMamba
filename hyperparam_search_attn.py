@@ -19,7 +19,7 @@ import sys
 # Import your model and dataset
 from model import LightGTMamba  # Make sure this import works
 DODH_PROCESSED_DATA_DIR='/home/amli/TGMamba/data/'
-TUHZ_PROCESSED_DATA_DIR='/home/amli/TGMamba/data/tuhz/new/'
+TUHZ_PROCESSED_DATA_DIR='/home/amli/TGMamba/data/tuhz/processed_dataset/'
 BCICHA_DATA_DIR='/home/amli/TGMamba/data/BCIcha/'
 MAMEM_DATA_DIR='/home/amli/MAtt/data/MAMEM/'
 
@@ -148,7 +148,7 @@ def objective(trial, args, datamodule, input_dim, stopping_metric):
                 callbacks=[early_stop_callback, pruning_callback],
                 max_epochs=50,
                 accelerator="gpu",
-                devices=[4],  # Use GPUs 3 and 4 (index 2 and 3)
+                devices=[3],  # Use GPUs 3 and 4 (index 2 and 3)
                 # strategy="ddp",  # Enable DDP for multi-GPU training
                 accumulate_grad_batches=args.accumulate_grad_batches,
                 enable_progress_bar=True,
